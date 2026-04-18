@@ -468,31 +468,170 @@ highest-value features with zero new dependencies.
 
 ---
 
-## 9. Testing Strategy
+## 9. Design Decisions
 
-### Fixtures needed
+### 9.1 LLM prompt selection: per-directory, not per-file
 
-- `sample_nextjs_app/` — minimal App Router project with:
-  - `app/page.tsx` (server component)
-  - `app/dashboard/page.tsx` (server component with DB fetch)
-  - `components/Dashboard.tsx` (`'use client'` with props)
-  - `app/api/users/route.ts` (route handler, no auth)
-  - `app/actions.ts` (`'use server'` with mass assignment)
-  - `middleware.ts` (with incomplete matcher)
-  - `next.config.js` (permissive image patterns)
-  - `.env` (with `NEXT_PUBLIC_SECRET_KEY`)
+When scanning a Next.js project, the LLM needs the right system prompt
+(Python vs Next.js). Two options:
 
-### Test categories
+- Per-file: classify each file and pick a prompt per file
+- Per-directory: detect project type once, use the same prompt for all files
 
-- Rule tests: each regex rule with positive + negative match
-- Config scanner tests: secure vs insecure `next.config.js`
-- Framework detection: correctly identifies Next.js projects
-- LLM prompt tests: verify file-type context is included in LLM requests
-- Integration tests: end-to-end scan of the fixture project
+**Decision: per-directory for system prompt, per-file for context block.**
+
+`scan_directory` detects the project type at the start (Python/Next.js/both)
+and passes it to `scan_path_hybrid`. The system prompt is selected once.
+Then for each file, a context block is prepended with the file-type
+classification:
+
+```
+System prompt: NEXTJS_SCAN_SYSTEM_PROMPT (selected once per scan)
+
+Per-file context:
+  File: app/api/users/route.ts
+  Type: ROUTE HANDLER (always server-side)
+  Trust: Public HTTP endpoint. Must validate auth and input.
+  [file content]
+```
+
+This means `scan_file_llm()` gains two new parameters:
+
+```python
+def scan_file_llm(
+    content: str,
+    file_path: str,
+    project_type: str = "python",   # NEW: "python", "nextjs", "react"
+    file_type: str | None = None,   # NEW: "server_component", "client_component", etc.
+) -> tuple[list[LLMFinding], LLMUsage]:
+```
+
+The `project_type` selects the system prompt. The `file_type` generates the
+context block. For Python projects, both are ignored (existing behavior).
+
+### 9.2 File-type classifier
+
+New function in `core/nextjs.py`:
+
+```python
+def classify_nextjs_file(file_path: Path, project_root: Path) -> str:
+    """Classify a file in a Next.js App Router project.
+
+    Returns: "server_component", "client_component", "server_action",
+             "route_handler", "middleware", "layout", "page",
+             "error_boundary", "config", "lib"
+    """
+```
+
+Classification logic:
+1. Read first 5 lines for `'use client'` / `'use server'` directives
+2. Check filename: `route.ts` → route_handler, `middleware.ts` → middleware,
+   `layout.tsx` → layout, `page.tsx` → page, `error.tsx` → error_boundary,
+   `next.config.*` → config
+3. Check directory: files in `app/` default to server_component unless
+   marked `'use client'`
+4. Everything else → lib
+
+No tree-sitter needed — this is regex + path conventions. Accurate enough
+for file-type context priming.
+
+### 9.3 Project type detection in scan pipeline
+
+```
+scan_directory(path, mode="hybrid")
+  → detect_project_type(path)  # returns "python", "nextjs", "react", "monorepo"
+  → scan_path_hybrid(target, mode=mode, project_type=project_type)
+    → for each file:
+        if project_type == "nextjs":
+          file_type = classify_nextjs_file(file_path, project_root)
+          scan_file_llm(content, file_path, project_type="nextjs", file_type=file_type)
+        else:
+          scan_file_llm(content, file_path)  # existing Python behavior
+```
+
+---
+
+## 10. Testing Strategy
+
+### Test fixtures
+
+Committed to repo at `tests/fixtures/sample_nextjs_app/`. Not a real
+Next.js project — no `node_modules`, no build output, no `package-lock.json`.
+Just the source files the scanner reads:
+
+```
+tests/fixtures/sample_nextjs_app/
+├── next.config.js              # permissive image patterns, missing headers
+├── middleware.ts                # incomplete matcher (misses /api/admin)
+├── .env                        # NEXT_PUBLIC_SECRET_KEY=sk-proj-xxx
+├── package.json                # {"dependencies": {"next": "15.0.0"}}
+├── app/
+│   ├── page.tsx                # server component (clean)
+│   ├── dashboard/
+│   │   └── page.tsx            # server component: full user record → client prop
+│   ├── api/
+│   │   └── users/
+│   │       └── route.ts        # route handler: no auth, raw Prisma query
+│   └── actions.ts              # server action: Object.fromEntries mass assignment
+├── components/
+│   └── Dashboard.tsx           # 'use client': receives full user prop
+└── lib/
+    └── db.ts                   # Prisma client setup (clean)
+```
+
+Each file contains one or more known vulnerability patterns from the
+requirements. The fixture is small enough to commit (~200 lines total)
+and covers all file-type classifications.
+
+### conftest.py additions
+
+```python
+@pytest.fixture
+def sample_nextjs_app(tmp_path: Path) -> Path:
+    """Create the Next.js fixture in a temp directory."""
+    # Writes each file programmatically from inline strings
+    # Returns the project root path
+
+@pytest.fixture
+def nextjs_server_component(tmp_path: Path) -> Path:
+    """A single server component with over-fetching."""
+
+@pytest.fixture
+def nextjs_route_handler(tmp_path: Path) -> Path:
+    """A single route handler with no auth."""
+
+@pytest.fixture
+def nextjs_server_action(tmp_path: Path) -> Path:
+    """A single server action with mass assignment."""
+```
+
+### Test files
+
+| File | What it tests |
+|------|--------------|
+| `tests/test_nextjs_rules.py` | Each of ~28 regex rules: positive + negative match |
+| `tests/test_nextjs_config.py` | `scan_nextjs_config()`: secure vs insecure configs |
+| `tests/test_nextjs_classifier.py` | `classify_nextjs_file()`: each file type detected correctly |
+| `tests/test_nextjs_integration.py` | End-to-end: scan fixture project, verify findings by category |
+
+### Test approach for LLM prompt selection
+
+Don't mock the LLM for prompt tests — instead, verify the prompt
+construction:
+
+```python
+def test_nextjs_prompt_selected(self):
+    """When project_type='nextjs', the Next.js system prompt is used."""
+    # Mock the OpenAI client
+    # Call scan_file_llm(content, path, project_type="nextjs", file_type="server_component")
+    # Assert the system prompt passed to the API contains "App Router"
+    # Assert the user message contains "Type: SERVER COMPONENT"
+```
 
 ### Verification
 
-1. `uv run python -m pytest tests/ -v` — all pass
+1. `uv run python -m pytest tests/ -v` — all pass (existing + new)
 2. `uv run ruff check src/ tests/` — zero lint
-3. Manual: scan a real Next.js project with `mode="hybrid"`
-4. Manual: verify boundary-crossing findings appear in the report
+3. Manual: `scan_directory` on a real Next.js project with `mode="hybrid"`
+4. Manual: verify Server→Client boundary findings appear in report
+5. Manual: verify file-type context shows in LLM responses
