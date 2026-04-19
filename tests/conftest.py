@@ -28,7 +28,10 @@ def tmp_db(tmp_path: Path) -> Database:
 @pytest.fixture
 def patched_db(tmp_db: Database):
     """Patches get_db() to return the temp database."""
-    with patch("owasp_scanner.core.database.get_db", return_value=tmp_db):
+    with (
+        patch("owasp_scanner.core.database.get_db", return_value=tmp_db),
+        patch("owasp_scanner.server.get_db", return_value=tmp_db),
+    ):
         yield tmp_db
 
 

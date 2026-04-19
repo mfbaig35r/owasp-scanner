@@ -414,13 +414,15 @@ def get_rules(
     owasp_category: str | None = None,
     severity: str | None = None,
     include_plugins: bool = True,
+    category_type: str = "security",
 ) -> list[Rule]:
-    """Get rules, optionally filtered by category or severity.
+    """Get rules, optionally filtered by category, severity, or type.
 
     Args:
-        owasp_category: Filter to a specific OWASP category.
+        owasp_category: Filter to a specific category (A01-A10 or TQ01-TQ10).
         severity: Filter to a specific severity level.
         include_plugins: If True, also load custom rules from ~/.owasp-scanner/rules/
+        category_type: 'security' (default), 'test_quality', or 'all'.
     """
     result = list(RULES)
 
@@ -429,11 +431,28 @@ def get_rules(
 
     result.extend(NEXTJS_RULES)
 
+    # Load test quality rules
+    if category_type in ("test_quality", "all"):
+        from owasp_scanner.rules.test_quality_patterns import (
+            TEST_QUALITY_PYO3_RULES,
+            TEST_QUALITY_PYTHON_RULES,
+            TEST_QUALITY_RUST_RULES,
+        )
+
+        result.extend(TEST_QUALITY_PYTHON_RULES)
+        result.extend(TEST_QUALITY_RUST_RULES)
+        result.extend(TEST_QUALITY_PYO3_RULES)
+
+    # Filter to only test quality rules when specifically requested
+    if category_type == "test_quality":
+        result = [r for r in result if r.id.startswith("TQ-")]
+    elif category_type == "security":
+        result = [r for r in result if not r.id.startswith("TQ-")]
+
     if include_plugins:
         from owasp_scanner.rules.loader import load_plugin_rules
 
         plugin_rules = load_plugin_rules()
-        # Avoid duplicate IDs
         existing_ids = {r.id for r in result}
         for pr in plugin_rules:
             if pr.id not in existing_ids:

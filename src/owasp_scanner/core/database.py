@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS findings (
     line_number     INTEGER,
     rule_id         TEXT,                -- rule that triggered this finding (e.g. A05-001)
     fingerprint     TEXT UNIQUE,         -- SHA-256(file_path + line_number + rule_id) for dedup
-    owasp_category  TEXT NOT NULL,       -- A01..A10
+    category_type   TEXT NOT NULL DEFAULT 'security',  -- 'security' or 'test_quality'
+    owasp_category  TEXT NOT NULL,       -- A01..A10 or TQ01..TQ10
     severity        TEXT NOT NULL,       -- critical, high, medium, low
     title           TEXT NOT NULL,
     description     TEXT NOT NULL,
@@ -70,6 +71,7 @@ CREATE INDEX IF NOT EXISTS idx_findings_severity ON findings(severity);
 CREATE INDEX IF NOT EXISTS idx_findings_file ON findings(file_path);
 CREATE INDEX IF NOT EXISTS idx_findings_scan ON findings(scan_id);
 CREATE INDEX IF NOT EXISTS idx_findings_fingerprint ON findings(fingerprint);
+CREATE INDEX IF NOT EXISTS idx_findings_category_type ON findings(category_type);
 CREATE INDEX IF NOT EXISTS idx_audit_finding ON audit_log(finding_id);
 """
 
@@ -88,6 +90,13 @@ _MIGRATIONS = [
         "confidence",
         [
             "ALTER TABLE findings ADD COLUMN confidence REAL",
+        ],
+    ),
+    # Migration 3: Add category_type for test quality findings
+    (
+        "category_type",
+        [
+            "ALTER TABLE findings ADD COLUMN category_type TEXT NOT NULL DEFAULT 'security'",
         ],
     ),
 ]
@@ -109,6 +118,7 @@ class Finding:
     line_number: int | None = None
     rule_id: str | None = None
     fingerprint: str | None = None
+    category_type: str = "security"
     code_snippet: str | None = None
     suggested_fix: str | None = None
     status: str = "open"
@@ -127,6 +137,7 @@ class Finding:
             "line_number": self.line_number,
             "rule_id": self.rule_id,
             "fingerprint": self.fingerprint,
+            "category_type": self.category_type,
             "owasp_category": self.owasp_category,
             "severity": self.severity,
             "title": self.title,
@@ -301,6 +312,7 @@ class Database:
         scan_id: str | None = None,
         line_number: int | None = None,
         rule_id: str | None = None,
+        category_type: str = "security",
         code_snippet: str | None = None,
         suggested_fix: str | None = None,
         confidence: float | None = None,
@@ -341,6 +353,7 @@ class Database:
                 line_number=line_number,
                 rule_id=rule_id,
                 fingerprint=fingerprint,
+                category_type=category_type,
                 owasp_category=owasp_category,
                 severity=severity,
                 title=title,
@@ -354,12 +367,12 @@ class Database:
             conn.execute(
                 """INSERT INTO findings
                    (id, scan_id, file_path, line_number, rule_id, fingerprint,
-                    owasp_category, severity, title, description, code_snippet,
-                    suggested_fix, confidence, status, found_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    category_type, owasp_category, severity, title, description,
+                    code_snippet, suggested_fix, confidence, status, found_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     finding.id, finding.scan_id, finding.file_path, finding.line_number,
-                    finding.rule_id, finding.fingerprint,
+                    finding.rule_id, finding.fingerprint, finding.category_type,
                     finding.owasp_category, finding.severity, finding.title, finding.description,
                     finding.code_snippet, finding.suggested_fix, finding.confidence, finding.status,
                     finding.found_at, finding.updated_at,
@@ -385,6 +398,7 @@ class Database:
         status: str | None = None,
         severity: str | None = None,
         owasp_category: str | None = None,
+        category_type: str | None = None,
         file_path: str | None = None,
         scan_id: str | None = None,
         limit: int = 100,
@@ -404,6 +418,9 @@ class Database:
         if file_path:
             clauses.append("file_path LIKE ?")
             params.append(f"%{file_path}%")
+        if category_type:
+            clauses.append("category_type = ?")
+            params.append(category_type)
         if scan_id:
             clauses.append("scan_id = ?")
             params.append(scan_id)

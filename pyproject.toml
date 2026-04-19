@@ -41,3 +41,4 @@ select = ["E", "F", "I", "W", "UP"]
 "src/owasp_scanner/core/database.py" = ["E501"]   # SQL strings are long
 "src/owasp_scanner/core/config_scanner.py" = ["E501"]  # Description strings are long
 "src/owasp_scanner/rules/nextjs_patterns.py" = ["E501"]  # Rule descriptions are long
+"src/owasp_scanner/rules/test_quality_patterns.py" = ["E501"]  # Rule descriptions are long
