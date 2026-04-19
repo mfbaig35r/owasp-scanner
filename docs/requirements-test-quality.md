@@ -54,53 +54,134 @@ Analogous to OWASP categories but for test coverage:
 
 ## 2. Source-to-Test File Pairing
 
-The hardest structural problem. The scanner needs to know which test file
-covers which source file.
+The hardest structural problem. Treat this as a **ranked candidate search**,
+not a single naming-rule lookup. Real projects use at least five different
+mapping patterns, and no single rule covers all of them.
 
-### Python conventions (pytest)
+### Evidence from real projects
 
-| Source | Possible test locations |
-|--------|----------------------|
-| `src/app/views.py` | `tests/test_views.py`, `tests/app/test_views.py`, `tests/test_app_views.py` |
-| `rustcluster/__init__.py` | `tests/test_init.py`, `tests/test_rustcluster.py` |
-| `lib/utils.py` | `tests/test_utils.py` |
+| Project | Source root | Test root | Pairing pattern |
+|---------|-----------|-----------|----------------|
+| **Requests** | `src/requests/` | `tests/` | Clean basename: `utils.py → test_utils.py` |
+| **Pydantic** | `pydantic/` | `tests/` | Clean basename: `fields.py → test_fields.py` |
+| **Flask** | `src/flask/` | `tests/` | Conceptual rename: `app.py → test_basic.py` |
+| **FastAPI** | `fastapi/` | `tests/` | Singular/plural: `applications.py → test_application.py` |
+| **Django** | `django/` | `tests/` | Directory-area: `django/forms/ → tests/forms_tests/` |
+| **SQLAlchemy** | `lib/sqlalchemy/` | `test/` | Package-area mirror: `engine/ → test/engine/` |
+| **Black** | `src/black/` | `tests/` | Package-to-feature: `src/black/ → tests/test_black.py` |
 
-Strategy: search for test files matching `test_{stem}.py` or `{stem}_test.py`
-in `tests/` and subdirectories. Fall back to fuzzy matching on module name.
-If no match found, the source file itself is a TQ09 finding.
+Key failure modes for naive pairing:
+- **Singular/plural**: FastAPI `applications.py → test_application.py`
+- **Conceptual rename**: Flask `app.py → test_basic.py`
+- **Area mapping**: Django `django/forms/ → tests/forms_tests/`
+- **Test root name**: SQLAlchemy uses `test/`, not `tests/`
+- **No file-level mapping**: Django/SQLAlchemy map source areas to test areas
 
-### Rust conventions
+### Pairing algorithm (research-informed)
 
-| Source | Test location |
-|--------|-------------|
-| `src/kmeans.rs` | Inline `#[cfg(test)] mod tests` in same file |
-| `src/lib.rs` | `tests/` directory at crate root (integration tests) |
+**Step 1: Parse config first.**
 
-Strategy: parse the source file for `#[cfg(test)]` modules. Check `tests/`
-directory for integration tests. Rust is much easier than Python here because
-the conventions are enforced by cargo.
+Read in priority order:
+1. `pyproject.toml [tool.pytest.ini_options]` — `testpaths`, `python_files`
+2. `pytest.ini`
+3. `setup.cfg [tool:pytest]`
+4. `tox.ini` for hints like `pytest {posargs:tests}`
+5. `Cargo.toml` for Rust workspace structure
 
-### PyO3 boundary tests
+Respect `testpaths` if present (Pydantic, Requests, Flask all pin it).
+Detect `python_files` overrides (default: `test_*.py` AND `*_test.py`).
 
-For a project like rustcluster, there are three test layers:
-1. **Rust unit tests** — `#[test]` functions testing Rust logic
-2. **Python integration tests** — pytest testing the Python API
-3. **Cross-boundary tests** — pytest tests that exercise Rust code via PyO3
+**Step 2: Detect repository mode.**
 
-The scanner should understand all three and identify gaps at each layer.
+| Signal | Mode |
+|--------|------|
+| `Cargo.toml` + `pyproject.toml` | Hybrid (Rust+Python) |
+| `Cargo.toml` only | Pure Rust |
+| `pyproject.toml` or `setup.py` only | Pure Python |
+| Multiple `Cargo.toml` in subdirs | Rust workspace |
+
+For hybrid projects (like rustcluster, pydantic-core): create two parallel
+pairing graphs — Rust source↔Rust tests AND Python wrapper↔Python tests.
+Don't collapse them.
+
+**Step 3: Generate scored candidates.**
+
+For each source file, generate candidate test files ranked by confidence:
+
+| Confidence | Candidate pattern | Example |
+|-----------|------------------|---------|
+| 0.9 | Exact basename: `test_{stem}.py` in test root | `utils.py → tests/test_utils.py` |
+| 0.9 | Exact basename: `{stem}_test.py` in test root | `utils.py → tests/utils_test.py` |
+| 0.8 | Source-root stripped mirror | `src/pkg/sub/foo.py → tests/sub/test_foo.py` |
+| 0.7 | Package-area mirror | `src/pkg/engine/ → tests/engine/` |
+| 0.5 | Singular/plural variant | `applications.py → test_application.py` |
+| 0.3 | Conceptual match (LLM) | `app.py → test_basic.py` |
+
+For Rust:
+| Confidence | Candidate pattern |
+|-----------|------------------|
+| 1.0 | Same-file inline `#[cfg(test)]` module |
+| 0.8 | Same-crate `tests/` integration test |
+| 0.5 | Workspace-level test crate (e.g., Serde's `test_suite/`) |
+
+**Step 4: Optionally upgrade with coverage data.**
+
+`coverage.py` can record per-test execution context — "which test function
+ran this source line." If a `.coverage` file or coverage JSON exists:
+- Parse it to confirm which test files actually executed which source files
+- Upgrade candidate confidence based on real execution data
+- Flag source files with zero coverage data as TQ09
+
+This is optional — the scanner works without it, but works much better with it.
+
+**Step 5: Allow many-to-many and area-level pairing.**
+
+Some projects (Django, SQLAlchemy) don't have 1:1 file mappings. The output
+should support:
+- One source file → multiple test files
+- One test file → multiple source files
+- Source directory → test directory (area-level)
+- Source file → no test file (TQ09 finding)
 
 ### Implementation
 
-New function: `pair_source_to_tests(source_file, project_root) -> list[Path]`
-
 ```python
+@dataclass
+class TestCandidate:
+    test_path: Path
+    confidence: float          # 0.0-1.0
+    match_type: str            # "basename", "mirror", "area", "coverage", "conceptual"
+
 @dataclass
 class SourceTestPair:
     source: Path
-    tests: list[Path]           # matched test files
-    test_functions: list[str]   # test function names that reference this module
-    coverage: str               # "none", "partial", "good"
+    language: str              # "python", "rust"
+    candidates: list[TestCandidate]
+    inline_tests: bool         # Rust: has #[cfg(test)] module
+    coverage_confirmed: bool   # Upgraded by coverage data
+    status: str                # "paired", "unpaired", "area_only"
 ```
+
+### Rust conventions
+
+Cargo's discovery is simpler than Python:
+- **Unit tests**: inline `#[cfg(test)] mod tests` in same file — confidence 1.0
+- **Integration tests**: `tests/` directory at crate root — each file is a separate test binary
+- **Doc tests**: `///` comments with code blocks
+- **Benchmarks**: `benches/` — exercise code but don't assert (recognized as coverage, not tests)
+- **Workspaces**: multiple crates may have a dedicated test crate (like Serde's `test_suite/`)
+
+### PyO3 boundary tests
+
+For hybrid projects like rustcluster, three test layers:
+1. **Rust unit tests** (`#[test]`) — Rust logic correctness
+2. **Python integration tests** (pytest) — Python API behavior
+3. **Cross-boundary tests** (pytest) — FFI edge cases (dtype, contiguity, errors)
+
+The scanner should verify coverage at each layer and flag gaps:
+- `#[pyfunction]` without Python-level test → TQ-PYO3-001
+- Error conversion without Python-side `pytest.raises` → TQ-PYO3-005
+- dtype dispatch (f32/f64) with tests covering only one dtype → TQ-PYO3-003
 
 ---
 
