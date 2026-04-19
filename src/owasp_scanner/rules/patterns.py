@@ -21,6 +21,7 @@ class Rule:
     pattern: re.Pattern[str]
     file_glob: str = "*.py"  # Which files this rule applies to
     suggested_fix: str = ""
+    exclude_pattern: re.Pattern[str] | None = None  # If matched, suppress the finding
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -364,6 +365,143 @@ RULES: list[Rule] = [
         suggested_fix="Revoke the token in Slack workspace settings. Use environment variables.",
     ),
 
+    # ── A01: Broken Access Control (continued) ──────────────────────────
+    Rule(
+        id="A01-003",
+        owasp_category="A01",
+        severity="high",
+        title="Potential SSRF via user-controlled URL",
+        description=(
+            "HTTP request made with a URL that may include user input. "
+            "An attacker could make the server request internal services "
+            "(metadata APIs, admin panels, cloud credentials endpoints)."
+        ),
+        pattern=re.compile(
+            r"requests\.(?:get|post|put|patch|delete|head|options)\s*\(\s*f['\"]",
+            _FLAGS,
+        ),
+        suggested_fix="Validate URLs against an allow-list of permitted hosts. Block internal/private IP ranges.",
+    ),
+    Rule(
+        id="A01-004",
+        owasp_category="A01",
+        severity="high",
+        title="Potential SSRF via urllib with dynamic URL",
+        description=(
+            "urllib request with a dynamically constructed URL. An attacker could "
+            "redirect the server to request internal resources."
+        ),
+        pattern=re.compile(
+            r"urllib\.request\.(?:urlopen|urlretrieve)\s*\(\s*(?:f['\"]|[^'\")]*\+)",
+            _FLAGS,
+        ),
+        suggested_fix="Validate URLs against an allow-list. Never pass raw user input to urllib.",
+    ),
+
+    # ── A02: Security Misconfiguration (continued) ─────────────────────
+    Rule(
+        id="A02-006",
+        owasp_category="A02",
+        severity="high",
+        title="XML external entity (XXE) processing enabled",
+        description=(
+            "XML parser used without disabling external entity resolution. "
+            "Attackers can read local files, perform SSRF, or cause denial of service."
+        ),
+        pattern=re.compile(
+            r"(?:xml\.etree\.ElementTree|etree)\.(?:parse|fromstring|iterparse)\s*\(",
+            _FLAGS,
+        ),
+        suggested_fix="Use defusedxml instead: from defusedxml.ElementTree import parse. Or disable entity resolution explicitly.",
+    ),
+    Rule(
+        id="A02-007",
+        owasp_category="A02",
+        severity="high",
+        title="lxml parser without safe settings",
+        description=(
+            "lxml.etree used to parse XML without explicitly disabling network access "
+            "and entity resolution. Vulnerable to XXE attacks."
+        ),
+        pattern=re.compile(
+            r"lxml\.etree\.(?:parse|fromstring|XML|HTML)\s*\([^)]*\)(?!.*resolve_entities\s*=\s*False)",
+            _FLAGS,
+        ),
+        suggested_fix="Use defusedxml.lxml, or pass parser=etree.XMLParser(resolve_entities=False, no_network=True).",
+    ),
+
+    # ── A03: Software Supply Chain Failures ─────────────────────────────
+    Rule(
+        id="A03-001",
+        owasp_category="A03",
+        severity="medium",
+        title="pip install without version pinning",
+        description=(
+            "Installing packages without pinned versions means builds are not reproducible "
+            "and a compromised package version could be silently pulled."
+        ),
+        pattern=re.compile(
+            r"pip\s+install\s+(?!-r\b|--requirement\b|-e\b|--editable\b|\.)(?:[a-zA-Z][\w-]*\s*(?!==|>=|<=|~=|!=)(?:\s|$))",
+            _FLAGS,
+        ),
+        file_glob="*",
+        suggested_fix="Pin exact versions: pip install package==1.2.3. Use lock files with hashes.",
+    ),
+    Rule(
+        id="A03-002",
+        owasp_category="A03",
+        severity="high",
+        title="pip install from URL or VCS",
+        description=(
+            "Installing packages directly from git URLs or HTTP endpoints bypasses "
+            "registry integrity checks and is vulnerable to compromise."
+        ),
+        pattern=re.compile(
+            r"pip\s+install\s+(?:--trusted-host\s+\S+\s+)?(?:git\+|https?://|svn\+)",
+            _FLAGS,
+        ),
+        file_glob="*",
+        suggested_fix="Publish packages to a private registry. If git installs are necessary, pin to a specific commit hash.",
+    ),
+
+    # ── A04: Cryptographic Failures (continued) ────────────────────────
+    Rule(
+        id="A04-005",
+        owasp_category="A04",
+        severity="high",
+        title="AES in ECB mode",
+        description=(
+            "ECB mode encrypts identical plaintext blocks to identical ciphertext blocks, "
+            "leaking patterns in the data. Never use ECB for multi-block data."
+        ),
+        pattern=re.compile(r"(?:AES\.new|AES\.encrypt)\s*\([^)]*MODE_ECB", _FLAGS),
+        suggested_fix="Use AES-GCM (MODE_GCM) or AES-CTR (MODE_CTR) for authenticated encryption.",
+    ),
+    Rule(
+        id="A04-006",
+        owasp_category="A04",
+        severity="high",
+        title="DES or Triple DES usage",
+        description="DES has a 56-bit key (broken). 3DES is deprecated by NIST as of 2023. Use AES-256.",
+        pattern=re.compile(r"(?:DES3?|Triple_?DES)\.new\s*\(", _FLAGS),
+        suggested_fix="Migrate to AES-256-GCM: from Crypto.Cipher import AES; cipher = AES.new(key, AES.MODE_GCM).",
+    ),
+    Rule(
+        id="A04-007",
+        owasp_category="A04",
+        severity="high",
+        title="Password hashed with fast hash (SHA/MD5)",
+        description=(
+            "Using hashlib directly on passwords is insecure — SHA-256 and MD5 are too fast, "
+            "allowing billions of guesses per second. Use a purpose-built password hash."
+        ),
+        pattern=re.compile(
+            r"hashlib\.(?:sha256|sha512|sha1|md5)\s*\(\s*(?:password|passwd|pwd|user_pass)",
+            _FLAGS,
+        ),
+        suggested_fix="Use argon2-cffi, bcrypt, or passlib with Argon2id. Never hash passwords with hashlib.",
+    ),
+
     # ── A08: Integrity Failures ─────────────────────────────────────────
     Rule(
         id="A08-001",
@@ -374,6 +512,93 @@ RULES: list[Rule] = [
         pattern=re.compile(r"<script\s+src=['\"]https?://[^'\"]+['\"](?![^>]*integrity=)", _FLAGS),
         file_glob="*.html",
         suggested_fix="Add integrity='sha384-...' and crossorigin='anonymous' to all CDN script tags.",
+    ),
+
+    Rule(
+        id="A08-002",
+        owasp_category="A08",
+        severity="critical",
+        title="marshal.loads() on potentially untrusted data",
+        description="marshal can execute arbitrary code on deserialization, similar to pickle.",
+        pattern=re.compile(r"marshal\.loads?\(", _FLAGS),
+        suggested_fix="Use json.loads() for data interchange. marshal is for Python internals only.",
+    ),
+    Rule(
+        id="A08-003",
+        owasp_category="A08",
+        severity="high",
+        title="shelve.open() uses pickle internally",
+        description="shelve uses pickle for serialization. If the shelf file is attacker-controlled, arbitrary code execution is possible.",
+        pattern=re.compile(r"shelve\.open\s*\(", _FLAGS),
+        suggested_fix="Use a JSON-based store or SQLite. If shelve is required, only open trusted files.",
+    ),
+    Rule(
+        id="A08-004",
+        owasp_category="A08",
+        severity="critical",
+        title="Unsafe deserialization (jsonpickle/dill)",
+        description="jsonpickle.decode() and dill.loads() can execute arbitrary code, just like pickle.",
+        pattern=re.compile(r"(?:jsonpickle\.decode|dill\.loads?)\s*\(", _FLAGS),
+        suggested_fix="Use json.loads() for data interchange. These libraries are as dangerous as pickle.",
+    ),
+
+    # ── A09: Security Logging and Alerting Failures ────────────────────
+    Rule(
+        id="A09-001",
+        owasp_category="A09",
+        severity="high",
+        title="Sensitive data in log message",
+        description=(
+            "Logging passwords, tokens, secrets, or API keys writes them to log files "
+            "where they may be accessible to operations staff, log aggregators, or attackers."
+        ),
+        pattern=re.compile(
+            r"(?:log(?:ger|ging)?\.(?:debug|info|warning|error|critical|exception)|print)\s*\("
+            r"[^)]*(?:password|passwd|secret|token|api_key|apikey|ssn|credit_card)",
+            _FLAGS,
+        ),
+        suggested_fix="Never log sensitive data. Mask or redact credentials before logging.",
+    ),
+    Rule(
+        id="A09-002",
+        owasp_category="A09",
+        severity="high",
+        title="F-string in log message with user-controlled input (log injection)",
+        description=(
+            "F-string in a log call interpolates a variable whose name suggests "
+            "user-controlled input (request, params, query, form, header, body, "
+            "payload). An attacker can inject newlines to forge log entries or "
+            "corrupt log analysis. Use %s placeholders and sanitize input."
+        ),
+        pattern=re.compile(
+            r"log(?:ger|ging)?\.(?:debug|info|warning|error|critical|exception)\s*\(\s*f['\"]"
+            r"[^'\"]*\{"
+            r"[^}]*(?:request|req\.|params|query|form|header|body|payload|user_input|argv|stdin)"
+            r"[^}]*\}",
+            _FLAGS,
+        ),
+        suggested_fix='Sanitize input and use lazy formatting: logger.info("Request %s", sanitize(value))',
+    ),
+    Rule(
+        id="A09-003",
+        owasp_category="A09",
+        severity="low",
+        title="F-string in log message (bypasses lazy formatting)",
+        description=(
+            "Using f-strings in log calls bypasses the logging framework's lazy "
+            "formatting, meaning the string is always constructed even if the log "
+            "level is disabled. This is a performance/code quality issue, not a "
+            "security risk unless user-controlled input is interpolated (see A09-002)."
+        ),
+        pattern=re.compile(
+            r"log(?:ger|ging)?\.(?:debug|info|warning|error|critical|exception)\s*\(\s*f['\"]",
+            _FLAGS,
+        ),
+        exclude_pattern=re.compile(
+            r"\{[^}]*(?:request|req\.|params|query|form|header|body|payload|user_input|argv|stdin)[^}]*\}",
+            _FLAGS,
+        ),
+        suggested_fix='Use lazy formatting: logger.info("Processed %s pages", page_count)',
     ),
 
     # ── A10: Mishandling of Exceptional Conditions ──────────────────────
@@ -407,6 +632,36 @@ RULES: list[Rule] = [
         pattern=re.compile(r"traceback\.(?:format_exc|print_exc)\s*\(", _FLAGS),
         suggested_fix="Log stack traces server-side. Return generic error messages to users.",
     ),
+    Rule(
+        id="A10-004",
+        owasp_category="A10",
+        severity="medium",
+        title="HTTP request without timeout",
+        description=(
+            "requests.get/post without a timeout will block indefinitely if the server "
+            "doesn't respond, causing resource exhaustion and cascading failures."
+        ),
+        pattern=re.compile(
+            r"requests\.(?:get|post|put|patch|delete|head|options)\s*\([^)]*\)(?<!\btimeout\b)",
+            _FLAGS,
+        ),
+        suggested_fix="Always set a timeout: requests.get(url, timeout=30). Consider using httpx with default timeouts.",
+    ),
+    Rule(
+        id="A10-005",
+        owasp_category="A10",
+        severity="high",
+        title="Fail-open pattern (exception returns success)",
+        description=(
+            "Catching an exception and returning True/success means any error — including "
+            "security check failures — will be treated as a pass. This is a fail-open vulnerability."
+        ),
+        pattern=re.compile(
+            r"except\s*(?:\w+\s*)?(?:as\s+\w+\s*)?:\s*\n\s*return\s+True",
+            _FLAGS,
+        ),
+        suggested_fix="Fail closed: on exception in a security check, return False/deny access. Log the error.",
+    ),
 ]
 
 
@@ -414,15 +669,13 @@ def get_rules(
     owasp_category: str | None = None,
     severity: str | None = None,
     include_plugins: bool = True,
-    category_type: str = "security",
 ) -> list[Rule]:
-    """Get rules, optionally filtered by category, severity, or type.
+    """Get rules, optionally filtered by category or severity.
 
     Args:
-        owasp_category: Filter to a specific category (A01-A10 or TQ01-TQ10).
+        owasp_category: Filter to a specific category (A01-A10).
         severity: Filter to a specific severity level.
         include_plugins: If True, also load custom rules from ~/.owasp-scanner/rules/
-        category_type: 'security' (default), 'test_quality', or 'all'.
     """
     result = list(RULES)
 
@@ -430,24 +683,6 @@ def get_rules(
     from owasp_scanner.rules.nextjs_patterns import NEXTJS_RULES
 
     result.extend(NEXTJS_RULES)
-
-    # Load test quality rules
-    if category_type in ("test_quality", "all"):
-        from owasp_scanner.rules.test_quality_patterns import (
-            TEST_QUALITY_PYO3_RULES,
-            TEST_QUALITY_PYTHON_RULES,
-            TEST_QUALITY_RUST_RULES,
-        )
-
-        result.extend(TEST_QUALITY_PYTHON_RULES)
-        result.extend(TEST_QUALITY_RUST_RULES)
-        result.extend(TEST_QUALITY_PYO3_RULES)
-
-    # Filter to only test quality rules when specifically requested
-    if category_type == "test_quality":
-        result = [r for r in result if r.id.startswith("TQ-")]
-    elif category_type == "security":
-        result = [r for r in result if not r.id.startswith("TQ-")]
 
     if include_plugins:
         from owasp_scanner.rules.loader import load_plugin_rules

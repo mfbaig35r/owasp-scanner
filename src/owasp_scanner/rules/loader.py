@@ -46,6 +46,8 @@ def load_rules_from_yaml(yaml_path: Path) -> list[Rule]:
     for entry in data["rules"]:
         try:
             flags = re.IGNORECASE | re.MULTILINE
+            exclude_pat = entry.get("exclude_pattern")
+            exclude_compiled = re.compile(exclude_pat, flags) if exclude_pat else None
             rules.append(Rule(
                 id=entry["id"],
                 owasp_category=entry["owasp_category"],
@@ -55,6 +57,7 @@ def load_rules_from_yaml(yaml_path: Path) -> list[Rule]:
                 pattern=re.compile(entry["pattern"], flags),
                 file_glob=entry.get("file_glob", "*.py"),
                 suggested_fix=entry.get("suggested_fix", ""),
+                exclude_pattern=exclude_compiled,
             ))
         except (KeyError, re.error):
             # Skip malformed rules silently

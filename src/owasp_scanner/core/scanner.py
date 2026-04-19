@@ -172,6 +172,8 @@ def scan_file_content(
         # Search line by line for context
         for i, line in enumerate(lines, start=1):
             if rule.pattern.search(line):
+                if rule.exclude_pattern and rule.exclude_pattern.search(line):
+                    continue  # Suppressed by exclude_pattern
                 if not _is_suppressed(lines, i, rule):
                     matches.append(RuleMatch(
                         rule=rule,
@@ -184,6 +186,9 @@ def scan_file_content(
         # e.g., @login_required\n followed by no authz decorator
         for m in rule.pattern.finditer(content):
             line_num = content[:m.start()].count("\n") + 1
+            matched_line = lines[line_num - 1] if line_num <= len(lines) else ""
+            if rule.exclude_pattern and rule.exclude_pattern.search(matched_line):
+                continue  # Suppressed by exclude_pattern
             # Avoid duplicates from line-by-line scan
             if not any(
                 rm.rule.id == rule.id and rm.line_number == line_num
@@ -254,6 +259,7 @@ def scan_path(
     owasp_category: str | None = None,
     severity: str | None = None,
     exclude: list[str] | None = None,
+    project_surface: str | None = None,
 ) -> ScanResult:
     """Scan a file or directory and persist findings to the database."""
     rules = get_rules(owasp_category=owasp_category, severity=severity)
@@ -281,9 +287,10 @@ def scan_path(
                 for i in range(start, end)
             )
 
-            # Adjust severity based on file context
+            # Adjust severity based on file and project context
             effective_severity = adjust_severity(
                 match.rule.severity, match.file_path,
+                project_surface=project_surface,
             )
 
             finding, is_new = db.create_finding(
@@ -321,6 +328,7 @@ async def scan_path_hybrid(
     severity: str | None = None,
     exclude: list[str] | None = None,
     project_type: str | None = None,
+    project_surface: str | None = None,
 ) -> ScanResult:
     """Scan with regex, LLM, or hybrid mode.
 
@@ -333,6 +341,7 @@ async def scan_path_hybrid(
         return scan_path(
             target, db, scan_id,
             owasp_category=owasp_category, severity=severity, exclude=exclude,
+            project_surface=project_surface,
         )
 
     from owasp_scanner.core.llm_scanner import scan_file_llm, triage_findings
@@ -350,6 +359,7 @@ async def scan_path_hybrid(
         regex_result = scan_path(
             target, db, scan_id,
             owasp_category=owasp_category, severity=severity, exclude=exclude,
+            project_surface=project_surface,
         )
         all_findings.extend(regex_result.findings)
         new_count += regex_result.new_count
@@ -420,13 +430,17 @@ async def scan_path_hybrid(
         )
 
         for lf in llm_findings:
+            effective_llm_severity = adjust_severity(
+                lf.severity, str(file_path),
+                project_surface=project_surface,
+            )
             finding, is_new = db.create_finding(
                 scan_id=scan_id,
                 file_path=str(file_path),
                 line_number=lf.line_number,
                 rule_id=lf.rule_id,
                 owasp_category=lf.owasp_category,
-                severity=lf.severity,
+                severity=effective_llm_severity,
                 title=lf.title,
                 description=lf.description,
                 suggested_fix=lf.suggested_fix,

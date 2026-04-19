@@ -46,6 +46,8 @@ class ScannerSettings(BaseSettings):
 
     def ensure_dirs(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        # Restrict data directory — it may contain code snippets with secrets
+        self.data_dir.chmod(0o700)
 
 
 _settings: ScannerSettings | None = None

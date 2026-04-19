@@ -9,24 +9,19 @@ import pytest
 
 from owasp_scanner.core.database import Database
 from owasp_scanner.server import (
-    analyze_code,
     create_baseline,
     create_finding,
-    deep_analyze,
     export_report,
     export_sarif,
     get_finding,
-    get_owasp_reference,
     get_summary,
     get_trends,
     health_check,
     list_findings,
-    list_rules,
     list_scans,
     scan_config,
     scan_directory,
     scan_file,
-    scan_pr,
     update_finding,
     verify_fix,
 )
@@ -60,14 +55,6 @@ class TestScanTools:
         result = await scan_file(str(tmp_path))  # Directory, not file
         assert "error" in result
 
-    async def test_analyze_code_no_persist(self, mock_db: Database):
-        code = 'DEBUG = True\npassword = "secret123"'
-        result = await analyze_code(code)
-        assert result["total_findings"] > 0
-        # Verify nothing was saved to DB
-        findings = mock_db.list_findings()
-        assert len(findings) == 0
-
     async def test_scan_config_django(
         self, mock_db: Database, tmp_path: Path,
     ):
@@ -88,12 +75,6 @@ class TestScanTools:
     async def test_scan_config_not_a_file(self, mock_db: Database, tmp_path: Path):
         result = await scan_config(str(tmp_path))
         assert "error" in result
-
-    async def test_analyze_code_filter_category(self, mock_db: Database):
-        code = 'DEBUG = True\nhashlib.md5(x)'
-        result = await analyze_code(code, owasp_category="A04")
-        for f in result["findings"]:
-            assert f["owasp_category"] == "A04"
 
 
 class TestFindingsManagement:
@@ -234,15 +215,15 @@ class TestVerifyFix:
         assert verify["status"] == "file_missing"
 
 
-class TestScanPr:
-    async def test_scan_pr_not_a_repo(self, mock_db: Database, tmp_path: Path):
-        result = await scan_pr(str(tmp_path))
+class TestScanDirectoryGitDiff:
+    async def test_git_diff_not_a_repo(self, mock_db: Database, tmp_path: Path):
+        result = await scan_directory(str(tmp_path), git_diff_base="main")
         assert "error" in result
 
-    async def test_scan_pr_returns_pass_field(
+    async def test_git_diff_no_changes(
         self, mock_db: Database, tmp_path: Path,
     ):
-        """scan_pr on a repo with no changes should pass."""
+        """scan_directory with git_diff_base on a repo with no changes."""
         from unittest.mock import patch as mock_patch
 
         (tmp_path / ".git").mkdir()
@@ -250,13 +231,34 @@ class TestScanPr:
             "owasp_scanner.core.scanner.get_changed_files",
             return_value=[],
         ):
-            result = await scan_pr(str(tmp_path))
-        # No changes = no findings = pass
-        assert result.get("total_findings", 0) == 0
+            result = await scan_directory(str(tmp_path), git_diff_base="main")
+        assert result["total_findings"] == 0
+        assert result["changed_files"] == 0
+        assert result["git_diff_base"] == "main"
+
+    async def test_git_diff_with_changed_files(
+        self, mock_db: Database, tmp_path: Path,
+    ):
+        """scan_directory with git_diff_base scans only changed files."""
+        from unittest.mock import patch as mock_patch
+
+        (tmp_path / ".git").mkdir()
+        vuln_file = tmp_path / "app.py"
+        vuln_file.write_text('DEBUG = True\npassword = "secret123"')
+
+        with mock_patch(
+            "owasp_scanner.core.scanner.get_changed_files",
+            return_value=[vuln_file],
+        ):
+            result = await scan_directory(str(tmp_path), git_diff_base="main")
+        assert result["total_findings"] > 0
+        assert result["changed_files"] == 1
+        assert result["git_diff_base"] == "main"
+        assert str(vuln_file) in result["files_scanned"]
 
 
-class TestDeepAnalyze:
-    async def test_deep_analyze_fastapi_file(
+class TestScanFileDeepMode:
+    async def test_deep_mode_fastapi_file(
         self, mock_db: Database, tmp_path: Path,
     ):
         code = '''
@@ -274,26 +276,26 @@ async def login(body: dict):
 '''
         f = tmp_path / "main.py"
         f.write_text(code)
-        result = await deep_analyze(str(f))
+        result = await scan_file(str(f), mode="deep")
         assert result["framework"] == "fastapi"
         assert len(result["endpoints"]) > 0
         assert len(result["security_checklist"]) > 0
         assert "content" in result
 
-    async def test_deep_analyze_returns_checklist(
+    async def test_deep_mode_returns_checklist(
         self, mock_db: Database, sample_vulnerable_py: Path,
     ):
-        result = await deep_analyze(str(sample_vulnerable_py))
+        result = await scan_file(str(sample_vulnerable_py), mode="deep")
         checklist = result["security_checklist"]
         checks = [c["check"] for c in checklist]
         assert "Authorization" in checks
         assert "Rate Limiting" in checks
         assert "Input Validation" in checks
 
-    async def test_deep_analyze_not_a_file(
+    async def test_deep_mode_not_a_file(
         self, mock_db: Database, tmp_path: Path,
     ):
-        result = await deep_analyze(str(tmp_path))
+        result = await scan_file(str(tmp_path), mode="deep")
         assert "error" in result
 
 
@@ -398,34 +400,6 @@ class TestExportReport:
         )
         await export_report(output_path=str(out))
         assert out.exists()
-
-
-class TestRulesAndReference:
-    async def test_list_rules(self):
-        result = await list_rules()
-        assert result["count"] >= 25
-        assert "owasp_categories" in result
-
-    async def test_list_rules_filter(self):
-        result = await list_rules(owasp_category="A05")
-        for r in result["rules"]:
-            assert r["owasp_category"] == "A05"
-
-    async def test_get_owasp_reference_valid(self):
-        result = await get_owasp_reference("A01")
-        assert result["name"] == "Broken Access Control"
-        assert result["rank"] == 1
-        assert "key_defenses" in result
-        assert "python_traps" in result
-
-    async def test_get_owasp_reference_all_categories(self):
-        for cat in [f"A{i:02d}" for i in range(1, 11)]:
-            result = await get_owasp_reference(cat)
-            assert "name" in result, f"Missing reference for {cat}"
-
-    async def test_get_owasp_reference_invalid(self):
-        result = await get_owasp_reference("A99")
-        assert "error" in result
 
 
 class TestDiagnostics:

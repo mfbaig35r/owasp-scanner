@@ -142,30 +142,6 @@ NEXTJS_RULES.append(Rule(
     suggested_fix="Restrict to specific hostnames: hostname: 'cdn.example.com'",
 ))
 
-# JS-A02-003: reactStrictMode disabled
-NEXTJS_RULES.append(Rule(
-    id="JS-A02-003",
-    owasp_category="A02",
-    severity="medium",
-    title="reactStrictMode explicitly disabled",
-    description="React strict mode helps catch common bugs and unsafe patterns during development.",
-    pattern=re.compile(r"reactStrictMode\s*:\s*false", _FLAGS),
-    file_glob="next.config*",
-    suggested_fix="Set reactStrictMode: true",
-))
-
-# JS-A02-004: poweredByHeader not disabled
-NEXTJS_RULES.append(Rule(
-    id="JS-A02-004",
-    owasp_category="A02",
-    severity="low",
-    title="poweredByHeader enabled (fingerprinting)",
-    description="The X-Powered-By header reveals the application is built with Next.js.",
-    pattern=re.compile(r"poweredByHeader\s*:\s*true", _FLAGS),
-    file_glob="next.config*",
-    suggested_fix="Set poweredByHeader: false",
-))
-
 # JS-A02-005: Rewrites to internal services
 NEXTJS_RULES.append(Rule(
     id="JS-A02-005",
@@ -279,17 +255,6 @@ NEXTJS_RULES.extend(_js_rules(
     suggested_fix="Use execFile() with array arguments instead of exec() with shell strings.",
 ))
 
-# JS-A05-007: document.write
-NEXTJS_RULES.extend(_js_rules(
-    id="JS-A05-007",
-    owasp_category="A05",
-    severity="high",
-    title="document.write() usage (XSS risk)",
-    description="document.write() can inject arbitrary HTML/scripts into the page.",
-    pattern=re.compile(r"document\.write\s*\(", _FLAGS),
-    suggested_fix="Use DOM APIs (createElement, textContent) or React state.",
-))
-
 # JS-A05-008: router.push/replace with user input
 NEXTJS_RULES.extend(_js_rules(
     id="JS-A05-008",
@@ -319,24 +284,6 @@ NEXTJS_RULES.append(Rule(
     pattern=re.compile(r"matcher\s*[=:]\s*\[(?![^\]]*\/api)", _FLAGS),
     file_glob="middleware.*",
     suggested_fix="Add '/api/:path*' to the matcher array, or re-check auth in each route handler.",
-))
-
-# JS-A06-002: Route handler export (heuristic for missing rate limiting)
-NEXTJS_RULES.append(Rule(
-    id="JS-A06-002",
-    owasp_category="A06",
-    severity="medium",
-    title="Route handler — verify rate limiting is applied",
-    description=(
-        "Public route handlers should have rate limiting to prevent abuse. "
-        "Check that rate limiting middleware or logic is applied."
-    ),
-    pattern=re.compile(
-        r"export\s+(?:async\s+)?function\s+(?:GET|POST|PUT|DELETE|PATCH)\s*\(",
-        _FLAGS,
-    ),
-    file_glob="route.*",
-    suggested_fix="Add rate limiting via middleware, Vercel WAF, or a library like @upstash/ratelimit.",
 ))
 
 # ── A07: Authentication Failures ──────────────────────────────────────
@@ -390,13 +337,3 @@ NEXTJS_RULES.extend(_js_rules(
     suggested_fix="Return generic message: Response.json({error: 'Internal server error'}, {status: 500})",
 ))
 
-# JS-A10-003: Response with raw error in catch
-NEXTJS_RULES.extend(_js_rules(
-    id="JS-A10-003",
-    owasp_category="A10",
-    severity="medium",
-    title="Catch block may return raw error to client",
-    description="Returning the caught error object or its properties in an API response leaks internals.",
-    pattern=re.compile(r"catch\s*\(\s*(\w+)\s*\).*?Response\.json\s*\(.*?\1", re.DOTALL),
-    suggested_fix="Log errors server-side. Return generic error responses to clients.",
-))

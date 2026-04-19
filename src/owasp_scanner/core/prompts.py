@@ -9,16 +9,23 @@ You are a security auditor specializing in the OWASP Top 10 (2025).
 Analyze the provided source code for security vulnerabilities.
 
 Focus especially on issues that pattern matching cannot detect:
-- A01 Broken Access Control: missing authorization checks, IDOR, object-level access gaps
-- A02 Security Misconfiguration: unsafe defaults, missing headers, exposed debug info
-- A03 Supply Chain: unpinned deps, malicious patterns, unsafe imports
-- A04 Cryptographic Failures: weak hashing, missing encryption, hardcoded keys
+- A01 Broken Access Control: missing authorization checks, IDOR, SSRF, object-level access gaps
+- A02 Security Misconfiguration: unsafe defaults, missing headers, exposed debug info, XXE
+- A03 Supply Chain: unpinned deps, installs from git/HTTP, missing hash verification, \
+no SBOM, use of unmaintained packages, typosquatting risk in imports
+- A04 Cryptographic Failures: weak hashing, missing encryption, hardcoded keys, ECB mode
 - A05 Injection: SQL/NoSQL/command/template injection, unsafe deserialization
-- A06 Insecure Design: missing rate limiting, client-only validation, no threat model
+- A06 Insecure Design: missing rate limiting, client-only validation, no input allow-lists, \
+unrestricted file upload, trust boundary violations, race conditions in multi-step operations, \
+missing tenant isolation. This category is about WHAT IS MISSING — the absence of controls \
+that should exist. Regex cannot find missing code. You must evaluate whether the design is secure.
 - A07 Authentication Failures: custom auth, weak sessions, no brute-force protection
-- A08 Integrity Failures: missing SRI, unsigned artifacts
-- A09 Logging Failures: missing security logging, log injection, sensitive data in logs
-- A10 Exception Handling: silent error swallowing, leaked stack traces, missing transactions
+- A08 Integrity Failures: insecure deserialization, missing SRI, unsigned artifacts, mass assignment
+- A09 Logging Failures: authentication/authorization events not logged, missing audit trail, \
+sensitive data (passwords, tokens, PII) written to logs, no alerting on suspicious patterns, \
+f-string log injection. For every auth endpoint, check: is the failure case logged?
+- A10 Exception Handling: silent error swallowing, fail-open (returning success on exception), \
+leaked stack traces, missing timeouts, missing transactions
 
 Rules:
 - Only report real vulnerabilities with specific line references
@@ -85,6 +92,145 @@ def build_nextjs_file_context(
     label = ctx.get("label", file_type.upper())
     trust = ctx.get("trust", "")
     risk = ctx.get("risk", "")
+
+    return (
+        f"File: {file_path}\n"
+        f"Type: {label}\n"
+        f"Trust: {trust}\n"
+        f"Risk: {risk}\n\n"
+        f"```\n{content}\n```"
+    )
+
+
+# ── Python file context ───────────────────────────────────────────────────
+
+PYTHON_FILE_CONTEXT: dict[str, dict[str, str]] = {
+    "fastapi_route": {
+        "label": "FASTAPI ROUTE HANDLER",
+        "trust": "Public HTTP endpoint. Receives untrusted user input.",
+        "risk": (
+            "Must validate auth and input at the handler level. "
+            "Check for missing rate limiting, IDOR, and injection."
+        ),
+    },
+    "django_view": {
+        "label": "DJANGO VIEW",
+        "trust": "Public HTTP endpoint via URL routing.",
+        "risk": (
+            "@login_required checks authentication but not authorization. "
+            "Verify object-level access control. Check for raw SQL and "
+            "missing CSRF protection on state-changing views."
+        ),
+    },
+    "flask_route": {
+        "label": "FLASK ROUTE HANDLER",
+        "trust": "Public HTTP endpoint.",
+        "risk": (
+            "Flask does not enforce auth by default. Every route must "
+            "check authorization explicitly. Verify input validation and "
+            "template rendering safety."
+        ),
+    },
+    "mcp_tool": {
+        "label": "MCP TOOL (callable by AI agents)",
+        "trust": "Callable by LLM agents — treat all parameters as untrusted.",
+        "risk": (
+            "MCP tools that accept file paths, shell commands, or code are "
+            "high risk. Validate paths against allow-lists. Never pass "
+            "parameters to subprocess or eval without sanitization."
+        ),
+    },
+    "cli_script": {
+        "label": "CLI SCRIPT / ENTRYPOINT",
+        "trust": "Runs with user's local permissions.",
+        "risk": (
+            "If this reads config files or environment, check for injection "
+            "via malicious config values. Check subprocess calls."
+        ),
+    },
+    "settings": {
+        "label": "CONFIGURATION / SETTINGS",
+        "trust": "Defines application security posture.",
+        "risk": (
+            "Hardcoded secrets, DEBUG=True, ALLOWED_HOSTS=['*'], missing "
+            "security headers, and permissive CORS are all critical here."
+        ),
+    },
+    "model": {
+        "label": "DATA MODEL / ORM",
+        "trust": "Defines data layer. Runs server-side.",
+        "risk": (
+            "Check for mass assignment (accepting arbitrary fields from input), "
+            "missing field-level access control, and sensitive data exposure."
+        ),
+    },
+    "test": {
+        "label": "TEST FILE",
+        "trust": "Not deployed. Low risk.",
+        "risk": (
+            "Reduce severity of findings. Check for hardcoded test "
+            "credentials that match production."
+        ),
+    },
+    "lib": {
+        "label": "LIBRARY / UTILITY",
+        "trust": "Depends on callers.",
+        "risk": "Check if this handles user input. Trace callers to determine trust level.",
+    },
+}
+
+
+def classify_python_file(file_path: str, content: str) -> str:
+    """Classify a Python file by its role in the application.
+
+    Returns one of the keys in PYTHON_FILE_CONTEXT.
+    """
+    path_lower = file_path.lower()
+    name = path_lower.rsplit("/", 1)[-1] if "/" in path_lower else path_lower
+
+    # Test files
+    if name.startswith("test_") or name.startswith("conftest") or "/tests/" in path_lower:
+        return "test"
+
+    # Settings/config
+    if name in ("settings.py", "config.py", "conf.py", ".env"):
+        return "settings"
+
+    # Models
+    if name == "models.py" or "/models/" in path_lower:
+        return "model"
+
+    # Content-based detection
+    first_2k = content[:2000]
+
+    if "@mcp.tool" in first_2k or "FastMCP" in first_2k:
+        return "mcp_tool"
+    if "@app.get" in first_2k or "@app.post" in first_2k or "FastAPI" in first_2k:
+        return "fastapi_route"
+    is_django = "django" in first_2k.lower() or "@login_required" in first_2k
+    if "def " in first_2k and "request" in first_2k and is_django:
+        return "django_view"
+    if "@app.route" in first_2k or "Flask(" in first_2k:
+        return "flask_route"
+    if "argparse" in first_2k or "click.command" in first_2k or 'if __name__' in first_2k:
+        return "cli_script"
+
+    return "lib"
+
+
+def build_python_file_context(
+    file_path: str,
+    content: str,
+    file_type: str | None = None,
+) -> str:
+    """Build LLM user message with file-type context for Python files."""
+    if file_type is None:
+        file_type = classify_python_file(file_path, content)
+
+    ctx = PYTHON_FILE_CONTEXT.get(file_type, PYTHON_FILE_CONTEXT["lib"])
+    label = ctx["label"]
+    trust = ctx["trust"]
+    risk = ctx["risk"]
 
     return (
         f"File: {file_path}\n"
@@ -197,180 +343,3 @@ TRIAGE_FUNCTION_SCHEMA = {
         "required": ["assessments"],
     },
 }
-
-# ── Dataflow Evaluation ────────────────────────────────────────────────────
-
-DATAFLOW_SYSTEM_PROMPT = """\
-You are a security engineer evaluating data flow paths for exploitability.
-
-You will receive:
-1. Taint flow paths identified by static analysis (source → calls → sink)
-2. The relevant source code for each file in the flow
-
-For each flow, determine:
-- Is this flow actually exploitable? Can an attacker control the input?
-- Is there sanitization the static analyzer missed?
-- What is the real-world impact if exploited?
-- Are there additional flows the static analyzer might have missed?
-
-Pay special attention to:
-- Tainted data entering list/tuple literals then passed to subprocess
-- F-strings containing tainted data used in shell commands
-- Conditional expressions that may or may not pass tainted data
-"""
-
-DATAFLOW_FUNCTION_SCHEMA = {
-    "name": "report_dataflow_assessment",
-    "description": "Report exploitability assessment for each data flow.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "assessments": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "flow_index": {"type": "integer"},
-                        "exploitable": {"type": "boolean"},
-                        "confidence": {
-                            "type": "number",
-                            "minimum": 0,
-                            "maximum": 1,
-                        },
-                        "reasoning": {"type": "string"},
-                        "impact": {"type": "string"},
-                        "missed_sanitizer": {"type": "boolean"},
-                    },
-                    "required": [
-                        "flow_index", "exploitable", "confidence",
-                        "reasoning", "impact",
-                    ],
-                },
-            },
-            "additional_flows": {
-                "type": "array",
-                "description": "Flows the static analyzer missed.",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "description": {"type": "string"},
-                        "source_file": {"type": "string"},
-                        "source_line": {"type": "integer"},
-                        "sink_file": {"type": "string"},
-                        "sink_line": {"type": "integer"},
-                        "sink_type": {"type": "string"},
-                    },
-                    "required": ["description"],
-                },
-            },
-        },
-        "required": ["assessments"],
-    },
-}
-
-# ── Test Quality ───────────────────────────────────────────────────────
-
-TEST_QUALITY_SYSTEM_PROMPT = """\
-You are a test quality auditor. You will receive a source file and its \
-corresponding test file(s). Analyze the test coverage and identify gaps.
-
-For each public function/method in the source file:
-1. Does a corresponding test exist?
-2. How many code paths does the function have?
-3. How many of those paths are exercised by tests?
-4. What edge cases are missing?
-5. Is the test actually testing behavior, or just calling the function?
-
-For Rust: check unsafe blocks, .unwrap(), enum variants, error paths, generics.
-For PyO3: check Python API tests, dtype conversions, error messages, GIL release.
-
-Assign confidence 0.0-1.0. Severity: critical (no tests), high (missing error \
-path), medium (missing edge case), low (style issue).
-"""
-
-TEST_QUALITY_FUNCTION_SCHEMA = {
-    "name": "report_test_quality",
-    "description": "Report test quality findings.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "findings": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "category": {
-                            "type": "string",
-                            "enum": [
-                                "TQ01", "TQ02", "TQ03", "TQ04", "TQ05",
-                                "TQ06", "TQ07", "TQ08", "TQ09", "TQ10",
-                            ],
-                        },
-                        "severity": {
-                            "type": "string",
-                            "enum": ["critical", "high", "medium", "low"],
-                        },
-                        "title": {"type": "string"},
-                        "description": {"type": "string"},
-                        "source_function": {"type": "string"},
-                        "suggested_test": {"type": "string"},
-                        "confidence": {
-                            "type": "number", "minimum": 0, "maximum": 1,
-                        },
-                    },
-                    "required": [
-                        "category", "severity", "title",
-                        "description", "confidence",
-                    ],
-                },
-            },
-        },
-        "required": ["findings"],
-    },
-}
-
-SUGGEST_TESTS_SYSTEM_PROMPT = """\
-You are a test engineer. Given a source file, identify untested functions \
-and generate test skeletons with meaningful assertions. For Python: pytest \
-functions. For Rust: #[test] functions with assert!/assert_eq!.
-"""
-
-SUGGEST_TESTS_FUNCTION_SCHEMA = {
-    "name": "suggest_tests",
-    "description": "Generate test skeletons for untested code.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "suggestions": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "function_name": {"type": "string"},
-                        "test_code": {"type": "string"},
-                        "rationale": {"type": "string"},
-                    },
-                    "required": ["function_name", "test_code", "rationale"],
-                },
-            },
-        },
-        "required": ["suggestions"],
-    },
-}
-
-
-def build_test_quality_context(
-    source_path: str,
-    source_content: str,
-    test_path: str | None,
-    test_content: str | None,
-    language: str = "python",
-) -> str:
-    """Build LLM user message with source + test file context."""
-    msg = f"Source File: {source_path}\nLanguage: {language}\n\n"
-    msg += f"SOURCE:\n```\n{source_content[:30000]}\n```\n\n"
-    if test_path and test_content:
-        msg += f"Test File: {test_path}\n\nTESTS:\n```\n{test_content[:30000]}\n```"
-    else:
-        msg += "Test File: NOT FOUND\n"
-    return msg

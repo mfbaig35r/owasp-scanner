@@ -32,6 +32,22 @@ class TestA01:
         code = 'return FileResponse("/uploads/logo.png")'
         assert len(_scan(code, "A01-002")) == 0
 
+    def test_003_ssrf_requests_fstring_matches(self):
+        code = 'requests.get(f"http://{user_host}/api")'
+        assert len(_scan(code, "A01-003")) > 0
+
+    def test_003_ssrf_static_url_no_match(self):
+        code = 'requests.get("https://api.example.com/data")'
+        assert len(_scan(code, "A01-003")) == 0
+
+    def test_004_ssrf_urllib_fstring_matches(self):
+        code = 'urllib.request.urlopen(f"http://{host}/path")'
+        assert len(_scan(code, "A01-004")) > 0
+
+    def test_004_urllib_static_no_match(self):
+        code = 'urllib.request.urlopen("https://example.com")'
+        assert len(_scan(code, "A01-004")) == 0
+
 
 # ── A02: Security Misconfiguration ──────────────────────────────────────
 
@@ -71,8 +87,45 @@ class TestA02:
     def test_005_cors_allow_all_matches(self):
         assert len(_scan("CORS_ALLOW_ALL_ORIGINS = True", "A02-005")) > 0
 
+    def test_006_xxe_elementtree_matches(self):
+        code = 'tree = xml.etree.ElementTree.parse("data.xml")'
+        assert len(_scan(code, "A02-006")) > 0
+
+    def test_006_defusedxml_no_match(self):
+        code = 'tree = defusedxml.ElementTree.parse("data.xml")'
+        assert len(_scan(code, "A02-006")) == 0
+
+    def test_007_lxml_parse_matches(self):
+        code = 'doc = lxml.etree.parse("data.xml")'
+        assert len(_scan(code, "A02-007")) > 0
+
     def test_005_cors_specific_no_match(self):
         assert len(_scan('CORS_ALLOWED_ORIGINS = ["https://example.com"]', "A02-005")) == 0
+
+
+# ── A03: Software Supply Chain Failures ────────────────────────────────
+
+
+class TestA03:
+    def test_001_pip_install_unpinned_matches(self):
+        code = "pip install requests flask"
+        assert len(_scan(code, "A03-001", filename="setup.sh")) > 0
+
+    def test_001_pip_install_pinned_no_match(self):
+        code = "pip install requests==2.31.0"
+        assert len(_scan(code, "A03-001", filename="setup.sh")) == 0
+
+    def test_001_pip_install_requirements_no_match(self):
+        code = "pip install -r requirements.txt"
+        assert len(_scan(code, "A03-001", filename="setup.sh")) == 0
+
+    def test_002_pip_install_git_matches(self):
+        code = "pip install git+https://github.com/user/repo.git"
+        assert len(_scan(code, "A03-002", filename="Makefile")) > 0
+
+    def test_002_pip_install_http_matches(self):
+        code = "pip install https://example.com/package.tar.gz"
+        assert len(_scan(code, "A03-002", filename="Makefile")) > 0
 
 
 # ── A04: Cryptographic Failures ─────────────────────────────────────────
@@ -99,6 +152,30 @@ class TestA04:
 
     def test_004_verify_true_no_match(self):
         assert len(_scan("requests.get(url, verify=True)", "A04-004")) == 0
+
+    def test_005_aes_ecb_matches(self):
+        code = "cipher = AES.new(key, AES.MODE_ECB)"
+        assert len(_scan(code, "A04-005")) > 0
+
+    def test_005_aes_gcm_no_match(self):
+        code = "cipher = AES.new(key, AES.MODE_GCM)"
+        assert len(_scan(code, "A04-005")) == 0
+
+    def test_006_des_matches(self):
+        code = "cipher = DES.new(key)"
+        assert len(_scan(code, "A04-006")) > 0
+
+    def test_006_des3_matches(self):
+        code = "cipher = DES3.new(key)"
+        assert len(_scan(code, "A04-006")) > 0
+
+    def test_007_password_sha256_matches(self):
+        code = "hashed = hashlib.sha256(password.encode())"
+        assert len(_scan(code, "A04-007")) > 0
+
+    def test_007_data_sha256_no_match(self):
+        code = "checksum = hashlib.sha256(file_data)"
+        assert len(_scan(code, "A04-007")) == 0
 
 
 # ── A05: Injection ──────────────────────────────────────────────────────
@@ -254,6 +331,97 @@ class TestA08:
         code = '<script src="https://cdn.example.com/lib.js"></script>'
         assert len(_scan(code, "A08-001", filename="test.py")) == 0
 
+    def test_002_marshal_loads_matches(self):
+        code = "data = marshal.loads(raw_bytes)"
+        assert len(_scan(code, "A08-002")) > 0
+
+    def test_003_shelve_open_matches(self):
+        code = 'db = shelve.open("data.db")'
+        assert len(_scan(code, "A08-003")) > 0
+
+    def test_004_jsonpickle_decode_matches(self):
+        code = "obj = jsonpickle.decode(payload)"
+        assert len(_scan(code, "A08-004")) > 0
+
+    def test_004_dill_loads_matches(self):
+        code = "obj = dill.loads(data)"
+        assert len(_scan(code, "A08-004")) > 0
+
+    def test_004_json_loads_no_match(self):
+        code = "data = json.loads(payload)"
+        assert len(_scan(code, "A08-004")) == 0
+
+
+# ── A09: Security Logging and Alerting Failures ──��────────────────────────
+
+
+class TestA09:
+    # A09-001: Sensitive data in logs (unchanged)
+    def test_001_password_in_log_matches(self):
+        code = 'logger.info(f"User login: password={password}")'
+        assert len(_scan(code, "A09-001")) > 0
+
+    def test_001_token_in_log_matches(self):
+        code = 'logging.debug(f"Auth token: {token}")'
+        assert len(_scan(code, "A09-001")) > 0
+
+    def test_001_normal_log_no_match(self):
+        code = 'logger.info("User %s logged in", username)'
+        assert len(_scan(code, "A09-001")) == 0
+
+    # A09-002: F-string with user-controlled input (HIGH)
+    def test_002_fstring_with_request_matches(self):
+        code = 'logger.info(f"Processing {request.path}")'
+        assert len(_scan(code, "A09-002")) > 0
+
+    def test_002_fstring_with_query_matches(self):
+        code = 'logger.warning(f"Bad query: {query_string}")'
+        assert len(_scan(code, "A09-002")) > 0
+
+    def test_002_fstring_with_form_data_matches(self):
+        code = 'logger.info(f"Form submitted: {form_data}")'
+        assert len(_scan(code, "A09-002")) > 0
+
+    def test_002_fstring_with_header_matches(self):
+        code = 'logger.debug(f"Header value: {header_value}")'
+        assert len(_scan(code, "A09-002")) > 0
+
+    def test_002_fstring_internal_var_no_match(self):
+        code = 'logger.info(f"Extracted {page_count} pages from {filename}")'
+        assert len(_scan(code, "A09-002")) == 0
+
+    def test_002_percent_format_no_match(self):
+        code = 'logger.info("Processing request %s", request_id)'
+        assert len(_scan(code, "A09-002")) == 0
+
+    # A09-003: General f-string logging (LOW — code quality)
+    def test_003_fstring_internal_var_matches(self):
+        code = 'logger.info(f"Extracted {page_count} pages from {filename}")'
+        assert len(_scan(code, "A09-003")) > 0
+
+    def test_003_fstring_len_matches(self):
+        code = 'logger.info(f"Stored {len(chunk_dicts)} embedded chunks")'
+        assert len(_scan(code, "A09-003")) > 0
+
+    def test_003_fstring_with_request_no_match(self):
+        """A09-003 should NOT fire when user input is present (A09-002 handles that)."""
+        code = 'logger.info(f"Processing {request.path}")'
+        assert len(_scan(code, "A09-003")) == 0
+
+    def test_003_percent_format_no_match(self):
+        code = 'logger.info("Processing request %s", request_id)'
+        assert len(_scan(code, "A09-003")) == 0
+
+    def test_002_severity_is_high(self):
+        from owasp_scanner.rules.patterns import get_rules
+        rules = [r for r in get_rules() if r.id == "A09-002"]
+        assert rules[0].severity == "high"
+
+    def test_003_severity_is_low(self):
+        from owasp_scanner.rules.patterns import get_rules
+        rules = [r for r in get_rules() if r.id == "A09-003"]
+        assert rules[0].severity == "low"
+
 
 # ── A10: Mishandling of Exceptional Conditions ──────────────────────────
 
@@ -280,3 +448,11 @@ class TestA10:
 
     def test_003_logger_exception_no_match(self):
         assert len(_scan("logger.exception('Error occurred')", "A10-003")) == 0
+
+    def test_005_fail_open_matches(self):
+        code = "try:\n    check_auth()\nexcept Exception:\n    return True"
+        assert len(_scan(code, "A10-005")) > 0
+
+    def test_005_fail_closed_no_match(self):
+        code = "try:\n    check_auth()\nexcept Exception:\n    return False"
+        assert len(_scan(code, "A10-005")) == 0

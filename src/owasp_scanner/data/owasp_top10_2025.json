@@ -1,0 +1,474 @@
+{
+  "version": "2025",
+  "source": "https://owasp.org/Top10/2025/",
+  "categories": [
+    {
+      "id": "A01",
+      "name": "Broken Access Control",
+      "rank": 1,
+      "description": "Access control enforces policy such that users cannot act outside of their intended permissions. Failures lead to unauthorized information disclosure, modification or destruction of data, or performing business functions outside the user's limits.",
+      "stats": {
+        "cwes_mapped": 40,
+        "max_incidence_rate_pct": 20.15,
+        "avg_incidence_rate_pct": 3.74,
+        "total_occurrences": 1839701,
+        "total_cves": 32654,
+        "avg_weighted_exploit": 7.04,
+        "avg_weighted_impact": 3.84
+      },
+      "key_cwes": [
+        {"id": "CWE-200", "name": "Exposure of Sensitive Information to an Unauthorized Actor"},
+        {"id": "CWE-201", "name": "Exposure of Sensitive Information Through Sent Data"},
+        {"id": "CWE-352", "name": "Cross-Site Request Forgery (CSRF)"},
+        {"id": "CWE-918", "name": "Server-Side Request Forgery (SSRF)"},
+        {"id": "CWE-284", "name": "Improper Access Control"},
+        {"id": "CWE-285", "name": "Improper Authorization"},
+        {"id": "CWE-639", "name": "Authorization Bypass Through User-Controlled Key (IDOR)"}
+      ],
+      "common_vulnerabilities": [
+        "Violation of least privilege or default-deny (default-allow instead)",
+        "Bypassing access control by tampering with URL, parameters, or API requests",
+        "Insecure direct object references (IDOR) — viewing or editing another user's data by modifying identifiers",
+        "Missing access control on API endpoints for POST, PUT, DELETE",
+        "Privilege escalation — acting as admin when logged in as standard user",
+        "JWT token tampering, metadata manipulation, or replay of expired tokens",
+        "CORS misconfiguration allowing unauthorized cross-origin API access",
+        "Force browsing to unauthenticated or admin-only pages",
+        "SSRF — server makes requests to attacker-controlled URLs via unvalidated user input"
+      ],
+      "prevention": [
+        "Implement access control server-side where the attacker cannot modify it",
+        "Default-deny: reject all access except to explicitly public resources",
+        "Centralize access control mechanisms and reuse across the application",
+        "Enforce record ownership at the model/data layer, not just the UI",
+        "Disable directory listing and remove sensitive metadata from web roots",
+        "Log and alert on access control failures",
+        "Rate-limit API and controller access to minimize automated attack damage",
+        "Invalidate sessions server-side on logout; use short-lived stateless tokens (JWT)"
+      ]
+    },
+    {
+      "id": "A02",
+      "name": "Security Misconfiguration",
+      "rank": 2,
+      "description": "A system, application, or cloud service is set up incorrectly from a security perspective, creating exploitable vulnerabilities. Includes missing hardening, unnecessary features, unchanged defaults, overly verbose errors, missing security headers, and misconfigured permissions.",
+      "stats": {
+        "cwes_mapped": 16,
+        "max_incidence_rate_pct": 27.70,
+        "avg_incidence_rate_pct": 3.00,
+        "total_occurrences": 719084,
+        "total_cves": 1375,
+        "avg_weighted_exploit": null,
+        "avg_weighted_impact": null
+      },
+      "key_cwes": [
+        {"id": "CWE-16", "name": "Configuration"},
+        {"id": "CWE-611", "name": "Improper Restriction of XML External Entity Reference (XXE)"},
+        {"id": "CWE-209", "name": "Generation of Error Message Containing Sensitive Information"},
+        {"id": "CWE-1004", "name": "Sensitive Cookie Without 'HttpOnly' Flag"},
+        {"id": "CWE-942", "name": "Permissive Cross-domain Policy with Untrusted Domains"}
+      ],
+      "common_vulnerabilities": [
+        "Missing security hardening across any part of the application stack",
+        "Unnecessary features enabled (ports, services, pages, accounts, privileges)",
+        "Default accounts and passwords unchanged",
+        "Error handling reveals stack traces or overly informative error messages to users",
+        "Security headers missing or set to insecure values (CSP, HSTS, X-Frame-Options)",
+        "Software is out of date or has known vulnerabilities left unpatched",
+        "XXE: XML parsers process external entity references, enabling file read or SSRF",
+        "Cloud storage permissions default to public or internet-accessible",
+        "CORS wildcard or overly permissive origins configured"
+      ],
+      "prevention": [
+        "Implement repeatable hardening process for consistent secure deployment across dev/QA/prod",
+        "Minimal platform: remove unused features, components, documentation, and sample apps",
+        "Review and update configurations as part of the patch management process",
+        "Segment application architecture with containerization or ACLs",
+        "Send security directives to clients (security headers)",
+        "Automate verification of configurations in all environments",
+        "Use identity federation and short-lived credentials instead of hardcoded secrets",
+        "Disable XML external entity processing in all XML parsers"
+      ]
+    },
+    {
+      "id": "A03",
+      "name": "Software Supply Chain Failures",
+      "rank": 3,
+      "description": "Breakdowns in the creation, distribution, or updating of software. Vulnerabilities or malicious changes in third-party code, tools, or dependencies that the system relies on. Expanded from 'Vulnerable and Outdated Components' to cover full supply chain attacks.",
+      "stats": {
+        "cwes_mapped": 6,
+        "max_incidence_rate_pct": 9.56,
+        "avg_incidence_rate_pct": 5.72,
+        "total_occurrences": 215248,
+        "total_cves": 11,
+        "avg_weighted_exploit": null,
+        "avg_weighted_impact": null
+      },
+      "key_cwes": [
+        {"id": "CWE-1035", "name": "Using Components with Known Vulnerabilities"},
+        {"id": "CWE-1104", "name": "Use of Unmaintained Third Party Components"},
+        {"id": "CWE-1329", "name": "Reliance on Component That is Not Updateable"},
+        {"id": "CWE-1357", "name": "Reliance on Insufficiently Trustworthy Component"},
+        {"id": "CWE-1395", "name": "Dependency on Vulnerable Third-Party Component"},
+        {"id": "CWE-447", "name": "Use of Obsolete Function"}
+      ],
+      "common_vulnerabilities": [
+        "Using components with known CVEs (direct or transitive dependencies)",
+        "Not knowing which versions of components are in use (no SBOM)",
+        "Components unmaintained or abandoned with no security patches available",
+        "Compromised vendor update mechanisms (SolarWinds-style attacks)",
+        "Malicious packages in registries (typosquatting, dependency confusion)",
+        "Self-propagating supply chain worms (npm/PyPI)",
+        "CI/CD pipeline compromise allowing injection of malicious build steps",
+        "Installing packages from unofficial or untrusted sources without hash verification"
+      ],
+      "prevention": [
+        "Maintain a Software Bill of Materials (SBOM) for all direct and transitive dependencies",
+        "Continuously monitor CVE/NVD/OSV databases for vulnerabilities in dependencies",
+        "Source components exclusively from official, trusted repositories with signed packages",
+        "Pin dependency versions deliberately; don't float to latest implicitly",
+        "Apply patches timely using a risk-based approach with staged/canary deployments",
+        "Enable MFA across code repositories, developer workstations, and build servers",
+        "Enforce separation of duties: no single person deploys without oversight",
+        "Implement signed builds and immutable artifacts",
+        "Use automated software composition analysis (SCA) tools"
+      ],
+      "notable_incidents": [
+        "SolarWinds (2019): compromised vendor update infected ~18,000 organizations",
+        "Log4Shell CVE-2021-44228: Apache Log4j RCE via JNDI lookup",
+        "Bybit (2025): supply chain attack on wallet software, $1.5B theft",
+        "Shai-Hulud (2025): first self-propagating npm worm, 500+ package versions"
+      ]
+    },
+    {
+      "id": "A04",
+      "name": "Cryptographic Failures",
+      "rank": 4,
+      "description": "Failures related to cryptography that lead to exposure of sensitive data. Includes absent encryption, use of weak or deprecated algorithms, improper key management, and missing transport-layer security. Sensitive data requiring extra protection includes passwords, credit card numbers, health records, personal information, and business secrets.",
+      "stats": {
+        "cwes_mapped": 32,
+        "max_incidence_rate_pct": 13.77,
+        "avg_incidence_rate_pct": 3.80,
+        "total_occurrences": 1665348,
+        "total_cves": 2185,
+        "avg_weighted_exploit": 7.23,
+        "avg_weighted_impact": 3.90
+      },
+      "key_cwes": [
+        {"id": "CWE-327", "name": "Use of a Broken or Risky Cryptographic Algorithm"},
+        {"id": "CWE-328", "name": "Use of Weak Hash"},
+        {"id": "CWE-338", "name": "Use of Cryptographically Weak PRNG"},
+        {"id": "CWE-321", "name": "Use of Hard-coded Cryptographic Key"},
+        {"id": "CWE-320", "name": "Key Management Errors"},
+        {"id": "CWE-319", "name": "Cleartext Transmission of Sensitive Information"},
+        {"id": "CWE-326", "name": "Inadequate Encryption Strength"},
+        {"id": "CWE-329", "name": "Not Using an Unpredictable IV with CBC Mode"},
+        {"id": "CWE-759", "name": "Use of a One-Way Hash Without a Salt"},
+        {"id": "CWE-916", "name": "Use of Password Hash With Insufficient Computational Effort"},
+        {"id": "CWE-331", "name": "Insufficient Entropy"}
+      ],
+      "common_vulnerabilities": [
+        "Data transmitted in cleartext (HTTP, FTP, SMTP without TLS)",
+        "Deprecated algorithms used: MD5, SHA-1, DES, 3DES, RC4",
+        "ECB mode used for block cipher encryption",
+        "Weak or default cryptographic keys; keys committed to source control",
+        "No key rotation or keys used past expiration",
+        "Passwords stored with simple/fast hashing (SHA-256) instead of adaptive algorithms",
+        "Missing or weak salt on password hashes",
+        "Using random module (PRNG) instead of secrets/CSPRNG for security-sensitive values",
+        "TLS certificate validation disabled (verify=False)",
+        "Missing HSTS header allowing protocol downgrade attacks",
+        "Initialization vectors reused or predictable"
+      ],
+      "prevention": [
+        "Classify data by sensitivity; identify which data needs encryption at rest and in transit",
+        "Don't store sensitive data unnecessarily; discard it as soon as possible",
+        "Encrypt all data in transit with TLS 1.2+ and forward secrecy ciphers; enforce with HSTS",
+        "Use strong adaptive salted hashing for passwords: Argon2id, scrypt, bcrypt, or PBKDF2",
+        "Use authenticated encryption (GCM, ChaCha20-Poly1305), not just encryption",
+        "Generate keys cryptographically randomly; store as byte arrays, not in source code",
+        "Disable caching for responses containing sensitive data",
+        "Avoid deprecated algorithms: MD5, SHA-1, DES, 3DES, RC4, PKCS#1 v1.5",
+        "Prepare for post-quantum cryptography by 2030 for high-risk systems"
+      ]
+    },
+    {
+      "id": "A05",
+      "name": "Injection",
+      "rank": 5,
+      "description": "An application sends untrusted data to an interpreter as part of a command or query, causing unintended execution. Includes SQL, NoSQL, OS command, ORM, LDAP, Expression Language, and cross-site scripting (XSS). The application is vulnerable when user-supplied data is not validated, filtered, or sanitized.",
+      "stats": {
+        "cwes_mapped": 37,
+        "max_incidence_rate_pct": 13.77,
+        "avg_incidence_rate_pct": 3.08,
+        "total_occurrences": null,
+        "total_cves": 62445,
+        "avg_weighted_exploit": null,
+        "avg_weighted_impact": null
+      },
+      "key_cwes": [
+        {"id": "CWE-79", "name": "Cross-site Scripting (XSS)", "cves": 30000},
+        {"id": "CWE-89", "name": "SQL Injection", "cves": 14000},
+        {"id": "CWE-78", "name": "OS Command Injection"},
+        {"id": "CWE-94", "name": "Code Injection"},
+        {"id": "CWE-90", "name": "LDAP Injection"},
+        {"id": "CWE-643", "name": "XPath Injection"},
+        {"id": "CWE-917", "name": "Expression Language Injection"},
+        {"id": "CWE-77", "name": "Command Injection"},
+        {"id": "CWE-74", "name": "Improper Neutralization of Special Elements in Output"}
+      ],
+      "common_vulnerabilities": [
+        "SQL queries built with string concatenation or f-strings containing user input",
+        "ORM methods used unsafely (Django .extra(), .raw(), HQL concatenation)",
+        "OS commands executed with user input via os.system(), subprocess with shell=True",
+        "eval()/exec() called on user-controlled data",
+        "Unsafe deserialization: pickle.loads(), yaml.load() without SafeLoader",
+        "Template injection: user input used in Jinja2/Mako template strings",
+        "LDAP queries built with string concatenation",
+        "XSS: user input rendered in HTML without escaping (dangerouslySetInnerHTML, innerHTML)",
+        "Header injection via unvalidated input in HTTP response headers"
+      ],
+      "prevention": [
+        "Use safe APIs that avoid the interpreter entirely: parameterized queries, ORMs",
+        "Positive server-side input validation (allow-lists, not deny-lists)",
+        "Escape special characters using interpreter-specific escape syntax for residual dynamic queries",
+        "Use LIMIT and other SQL controls to prevent mass data disclosure on injection",
+        "For OS commands: use subprocess.run() with a list of arguments and shell=False",
+        "For deserialization: use json.loads() instead of pickle; yaml.safe_load() instead of yaml.load()",
+        "For templates: never pass user input as the template string; pass as data to a fixed template",
+        "Use Content-Security-Policy (CSP) headers to mitigate XSS impact"
+      ]
+    },
+    {
+      "id": "A06",
+      "name": "Insecure Design",
+      "rank": 6,
+      "description": "Missing or ineffective control design. Different from insecure implementation: a secure design can have implementation bugs (fixable), but an insecure design cannot be fixed by perfect implementation. Requires threat modeling, secure design patterns, and reference architectures.",
+      "stats": {
+        "cwes_mapped": 39,
+        "max_incidence_rate_pct": 22.18,
+        "avg_incidence_rate_pct": 1.86,
+        "total_occurrences": 729882,
+        "total_cves": 7647,
+        "avg_weighted_exploit": null,
+        "avg_weighted_impact": null
+      },
+      "key_cwes": [
+        {"id": "CWE-256", "name": "Unprotected Storage of Credentials"},
+        {"id": "CWE-269", "name": "Improper Privilege Management"},
+        {"id": "CWE-434", "name": "Unrestricted Upload of File with Dangerous Type"},
+        {"id": "CWE-501", "name": "Trust Boundary Violation"},
+        {"id": "CWE-522", "name": "Insufficiently Protected Credentials"},
+        {"id": "CWE-362", "name": "Race Condition"},
+        {"id": "CWE-444", "name": "HTTP Request/Response Smuggling"}
+      ],
+      "common_vulnerabilities": [
+        "No threat modeling performed for critical authentication, access control, or business logic flows",
+        "Trust boundary violations: untrusted data crosses into trusted context without validation",
+        "Missing rate limiting on sensitive operations (account creation, password reset, transactions)",
+        "Business logic flaws: no plausibility checks (e.g., bulk buying, negative quantities, price manipulation)",
+        "Unrestricted file upload without type/size validation or content scanning",
+        "Race conditions in multi-step transactions (TOCTOU)",
+        "Security questions for credential recovery (easily guessable or shared knowledge)",
+        "No anti-bot or anti-automation controls on high-value operations",
+        "Missing tenant isolation in multi-tenant architectures"
+      ],
+      "prevention": [
+        "Establish a Secure Development Lifecycle (SDLC) with AppSec professionals",
+        "Use threat modeling for authentication, access control, business logic, and key flows",
+        "Build and maintain a library of secure design patterns ('paved road' components)",
+        "Integrate security language and controls into user stories",
+        "Write unit and integration tests that validate resistance to the threat model",
+        "Implement plausibility checks at every tier (client, server, database)",
+        "Segregate tenant data and access by design, not just configuration",
+        "Limit resource consumption per user or service (rate limiting, quotas)"
+      ],
+      "scanner_note": "This is inherently an LLM category. Regex cannot detect missing controls or design flaws. The LLM evaluates whether the design itself is secure, not just the implementation."
+    },
+    {
+      "id": "A07",
+      "name": "Authentication Failures",
+      "rank": 7,
+      "description": "When an attacker can trick a system into recognizing an invalid or incorrect user as legitimate. Covers credential stuffing, brute force, weak passwords, missing MFA, insecure session management, and improper credential storage.",
+      "stats": {
+        "cwes_mapped": 36,
+        "max_incidence_rate_pct": 15.80,
+        "avg_incidence_rate_pct": 2.92,
+        "total_occurrences": 1120673,
+        "total_cves": 7147,
+        "avg_weighted_exploit": 7.69,
+        "avg_weighted_impact": 4.44
+      },
+      "key_cwes": [
+        {"id": "CWE-287", "name": "Improper Authentication"},
+        {"id": "CWE-259", "name": "Use of Hard-coded Password"},
+        {"id": "CWE-798", "name": "Use of Hard-coded Credentials"},
+        {"id": "CWE-384", "name": "Session Fixation"},
+        {"id": "CWE-297", "name": "Improper Certificate Validation with Host Mismatch"},
+        {"id": "CWE-306", "name": "Missing Authentication for Critical Function"},
+        {"id": "CWE-307", "name": "Improper Restriction of Excessive Authentication Attempts"}
+      ],
+      "common_vulnerabilities": [
+        "Permits automated attacks (credential stuffing, brute force, password spraying)",
+        "Allows default, weak, or well-known passwords (admin/admin, Password1)",
+        "Weak credential recovery using knowledge-based answers (security questions)",
+        "Passwords stored in plain text or with weak/unsalted hashing",
+        "Missing or ineffective multi-factor authentication",
+        "Session IDs exposed in URLs or not rotated after login",
+        "Sessions not properly invalidated on logout or after inactivity timeout",
+        "Identical error messages for login success/failure (enumeration) OR different messages (also enumeration)",
+        "No rate limiting or account lockout on failed authentication attempts",
+        "SSO without coordinated Single Logout leaving orphaned sessions"
+      ],
+      "prevention": [
+        "Implement multi-factor authentication to prevent credential stuffing and brute force",
+        "Never ship with default credentials; check against top 10,000 weak passwords and breached credential databases",
+        "Follow NIST 800-63b digital identity guidelines for password policy",
+        "Do not enforce forced password rotation unless breach is suspected",
+        "Use the same generic error message for all authentication outcomes (prevent enumeration)",
+        "Rate-limit failed login attempts; implement progressive delays or account lockout",
+        "Use server-side, secure session manager that generates high-entropy random session IDs",
+        "Session IDs must not be in the URL; must be invalidated after logout, idle timeout, and absolute timeout"
+      ]
+    },
+    {
+      "id": "A08",
+      "name": "Software or Data Integrity Failures",
+      "rank": 8,
+      "description": "Code and infrastructure that does not protect against integrity violations. Includes insecure deserialization, use of untrusted plugins/libraries/CDNs, insecure CI/CD pipelines, and auto-update mechanisms without integrity verification.",
+      "stats": {
+        "cwes_mapped": 14,
+        "max_incidence_rate_pct": 8.98,
+        "avg_incidence_rate_pct": 2.75,
+        "total_occurrences": 501327,
+        "total_cves": 3331,
+        "avg_weighted_exploit": 7.11,
+        "avg_weighted_impact": 4.79
+      },
+      "key_cwes": [
+        {"id": "CWE-502", "name": "Deserialization of Untrusted Data"},
+        {"id": "CWE-829", "name": "Inclusion of Functionality from Untrusted Control Sphere"},
+        {"id": "CWE-915", "name": "Improperly Controlled Modification of Dynamically-Determined Object Attributes (Mass Assignment)"},
+        {"id": "CWE-494", "name": "Download of Code Without Integrity Check"},
+        {"id": "CWE-345", "name": "Insufficient Verification of Data Authenticity"}
+      ],
+      "common_vulnerabilities": [
+        "Insecure deserialization: pickle, marshal, shelve, jsonpickle, dill, Java serialization, PHP unserialize",
+        "Plugins, libraries, or modules sourced from untrusted repositories or CDNs without integrity verification",
+        "CI/CD pipeline without integrity checks: unauthorized code changes can be deployed",
+        "Auto-update functionality downloading and applying updates without signature verification",
+        "CDN scripts loaded without Subresource Integrity (SRI) hashes",
+        "Mass assignment: object properties set from unvalidated request data (Object.fromEntries, **kwargs)",
+        "DNS or cookie forwarding to untrusted third-party services",
+        "Unsigned firmware or software packages accepted from unofficial sources"
+      ],
+      "prevention": [
+        "Use digital signatures or similar mechanisms to verify software/data origin and integrity",
+        "Consume libraries only from trusted repositories; consider hosting an internal vetted mirror",
+        "Use software composition analysis (SCA) tools to verify components are free of known vulnerabilities",
+        "Review code changes to minimize the chance of malicious code introduction",
+        "Ensure CI/CD pipeline has proper segregation, configuration, and access control",
+        "Never send unsigned or unencrypted serialized data to untrusted clients without integrity checks",
+        "Add Subresource Integrity (SRI) attributes to all CDN-loaded scripts and stylesheets"
+      ]
+    },
+    {
+      "id": "A09",
+      "name": "Security Logging and Alerting Failures",
+      "rank": 9,
+      "description": "Inability to detect, escalate, and respond to active breaches due to insufficient logging, unclear log messages, unmonitored logs, missing alerting, and inappropriate data capture. Without proper logging, breaches go undetected for months or years.",
+      "stats": {
+        "cwes_mapped": 5,
+        "max_incidence_rate_pct": 11.33,
+        "avg_incidence_rate_pct": 3.91,
+        "total_occurrences": 260288,
+        "total_cves": 723,
+        "avg_weighted_exploit": 7.19,
+        "avg_weighted_impact": 2.65
+      },
+      "key_cwes": [
+        {"id": "CWE-117", "name": "Improper Output Neutralization for Logs (Log Injection)"},
+        {"id": "CWE-223", "name": "Omission of Security-relevant Information"},
+        {"id": "CWE-532", "name": "Insertion of Sensitive Information into Log File"},
+        {"id": "CWE-778", "name": "Insufficient Logging"},
+        {"id": "CWE-221", "name": "Information Loss or Omission"}
+      ],
+      "common_vulnerabilities": [
+        "Login attempts, failed authentication, and access control failures not logged",
+        "High-value transactions not logged with audit trail",
+        "Warnings and errors generate no log messages or unclear ones",
+        "Logs not monitored for suspicious activity",
+        "Logs stored only locally with no backup or centralization",
+        "Alerting thresholds and response escalation missing or ineffective",
+        "Alert fatigue from excessive false positives",
+        "Sensitive data (passwords, tokens, PII) written to log files",
+        "Log injection: unescaped user input in log messages enables log forging",
+        "No real-time detection of active attacks",
+        "Using print() instead of structured logging framework"
+      ],
+      "prevention": [
+        "Log all login, access control, and input validation failures with sufficient user context for forensic analysis",
+        "Log both success and failure of security controls throughout the application",
+        "Format logs for easy consumption by log management/SIEM solutions",
+        "Encode log data properly to prevent injection attacks",
+        "Use append-only audit trails with integrity controls to prevent log tampering",
+        "Roll back error transactions and fail closed (default-deny on error)",
+        "Establish monitoring dashboards with alerts for suspicious patterns",
+        "Deploy honeytokens as attack traps within databases and user accounts",
+        "Never log sensitive data: passwords, session tokens, PII, API keys",
+        "Follow NIST 800-61r2 or later for incident response planning"
+      ]
+    },
+    {
+      "id": "A10",
+      "name": "Mishandling of Exceptional Conditions",
+      "rank": 10,
+      "description": "Applications fail to prevent, detect, and respond to unusual situations, causing crashes, data exposure, and security vulnerabilities. Encompasses inadequate input validation, delayed error handling, unexpected environmental states, and inconsistent exception management. Enables logic bugs, overflows, race conditions, and authentication/authorization bypasses.",
+      "stats": {
+        "cwes_mapped": 24,
+        "max_incidence_rate_pct": 20.67,
+        "avg_incidence_rate_pct": 2.95,
+        "total_occurrences": 769581,
+        "total_cves": 3416,
+        "avg_weighted_exploit": null,
+        "avg_weighted_impact": null
+      },
+      "key_cwes": [
+        {"id": "CWE-209", "name": "Generation of Error Message Containing Sensitive Information"},
+        {"id": "CWE-234", "name": "Failure to Handle Missing Parameter"},
+        {"id": "CWE-274", "name": "Improper Handling of Insufficient Privileges"},
+        {"id": "CWE-476", "name": "NULL Pointer Dereference"},
+        {"id": "CWE-636", "name": "Not Failing Securely (Failing Open)"},
+        {"id": "CWE-248", "name": "Uncaught Exception"},
+        {"id": "CWE-252", "name": "Unchecked Return Value"},
+        {"id": "CWE-369", "name": "Divide By Zero"},
+        {"id": "CWE-460", "name": "Improper Cleanup on Thrown Exception"},
+        {"id": "CWE-478", "name": "Missing Default Case in Multiple Condition Expression"}
+      ],
+      "common_vulnerabilities": [
+        "Bare except:pass silently swallowing all errors including security failures",
+        "Failing open: catching exceptions and returning success/allowing access on error",
+        "Stack traces and internal error details exposed to end users",
+        "Unchecked return values from security-critical operations",
+        "Resource exhaustion from exception handling that fails to release resources (file handles, connections)",
+        "Race conditions in multi-step transactions without proper rollback on error",
+        "Missing finally/cleanup blocks leaving resources in inconsistent state",
+        "No global exception handler for unhandled errors",
+        "Missing timeout on external requests causing cascading failures",
+        "Financial operations without transactional rollback allowing partial completion exploits"
+      ],
+      "prevention": [
+        "Catch errors at the point where they occur and handle them meaningfully — never silently",
+        "Fail closed: on any error in a security check, default to deny access",
+        "Roll back entire transactions on error; never recover mid-transaction",
+        "Implement global exception handlers for missed scenarios",
+        "Create error notifications, logging, and conditional alerts",
+        "Apply rate limiting, resource quotas, and throttling to prevent resource exhaustion",
+        "Set timeouts on all external requests and resource acquisitions",
+        "Use finally blocks or context managers to ensure cleanup on exception",
+        "Return generic error messages to users; log full details server-side",
+        "Conduct stress testing and penetration testing targeting error handling paths"
+      ]
+    }
+  ]
+}

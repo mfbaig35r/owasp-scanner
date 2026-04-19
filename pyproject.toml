@@ -1,25 +1,44 @@
 [project]
 name = "owasp-scanner"
-version = "0.1.0"
-description = "MCP server for OWASP Top 10 security scanning, vulnerability tracking, and remediation"
-requires-python = ">=3.12"
+dynamic = ["version"]
+description = "MCP server for OWASP Top 10 (2025) security scanning of Python and Next.js codebases"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+keywords = ["owasp", "security", "scanner", "mcp", "vulnerability", "nextjs", "sast"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+    "Typing :: Typed",
+]
 dependencies = [
-    "mcp[cli]>=1.2.0",
-    "pydantic>=2.7.0",
-    "pydantic-settings>=2.0.0",
+    "mcp[cli]~=1.2.0",
+    "pydantic~=2.7",
+    "pydantic-settings~=2.0",
 ]
 
 [project.scripts]
 owasp-scanner = "owasp_scanner.server:main"
 
 [project.optional-dependencies]
-llm = ["openai>=1.60.0"]
-plugins = ["pyyaml>=6.0"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.24", "pyyaml>=6.0", "openai>=1.60.0"]
+llm = ["openai~=1.60"]
+plugins = ["pyyaml~=6.0"]
+dev = ["pytest~=8.0", "pytest-asyncio~=0.24", "pyyaml~=6.0", "openai~=1.60"]
+
+[project.urls]
+Repository = "https://github.com/mfbaig35r/owasp-scanner"
+Issues = "https://github.com/mfbaig35r/owasp-scanner/issues"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/owasp_scanner/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/owasp_scanner"]
@@ -30,7 +49,7 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "UP"]
@@ -41,4 +60,3 @@ select = ["E", "F", "I", "W", "UP"]
 "src/owasp_scanner/core/database.py" = ["E501"]   # SQL strings are long
 "src/owasp_scanner/core/config_scanner.py" = ["E501"]  # Description strings are long
 "src/owasp_scanner/rules/nextjs_patterns.py" = ["E501"]  # Rule descriptions are long
-"src/owasp_scanner/rules/test_quality_patterns.py" = ["E501"]  # Rule descriptions are long

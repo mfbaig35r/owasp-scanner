@@ -1,8 +1,8 @@
 """LLM-powered security scanning using OpenAI-compatible APIs.
 
-Wraps the OpenAI SDK to scan code for OWASP Top 10 vulnerabilities,
-triage regex findings, and evaluate dataflow exploitability.
-Supports any OpenAI-compatible API via base_url override.
+Wraps the OpenAI SDK to scan code for OWASP Top 10 vulnerabilities
+and triage regex findings. Supports any OpenAI-compatible API via
+base_url override.
 """
 
 from __future__ import annotations
@@ -14,19 +14,13 @@ from typing import Any
 
 from owasp_scanner.core.config import get_settings
 from owasp_scanner.core.prompts import (
-    DATAFLOW_FUNCTION_SCHEMA,
-    DATAFLOW_SYSTEM_PROMPT,
     NEXTJS_SCAN_SYSTEM_PROMPT,
     SCAN_FUNCTION_SCHEMA,
     SCAN_SYSTEM_PROMPT,
-    SUGGEST_TESTS_FUNCTION_SCHEMA,
-    SUGGEST_TESTS_SYSTEM_PROMPT,
-    TEST_QUALITY_FUNCTION_SCHEMA,
-    TEST_QUALITY_SYSTEM_PROMPT,
     TRIAGE_FUNCTION_SCHEMA,
     TRIAGE_SYSTEM_PROMPT,
     build_nextjs_file_context,
-    build_test_quality_context,
+    build_python_file_context,
 )
 
 try:
@@ -187,7 +181,7 @@ def scan_file_llm(
     if project_type in ("nextjs", "react") and file_type:
         user_content = build_nextjs_file_context(file_path, file_type, content)
     else:
-        user_content = f"File: {file_path}\n\n```\n{content}\n```"
+        user_content = build_python_file_context(file_path, content)
 
     # Truncate very large files
     if len(content) > 150_000:
@@ -305,153 +299,3 @@ def _parse_triage_response(response: Any) -> list[TriageResult]:
     return results
 
 
-# ── Dataflow evaluation ───────────────────────────────────────────────────
-
-
-def evaluate_dataflows(
-    flows: list[dict[str, Any]],
-    source_code: dict[str, str],
-) -> tuple[list[dict[str, Any]], LLMUsage]:
-    """Evaluate taint flows for exploitability using the LLM.
-
-    Args:
-        flows: List of taint flow dicts from trace_dataflows.
-        source_code: Dict of file_path → file content for context.
-
-    Returns (assessments, usage).
-    """
-    client = _get_client()
-    model = _get_model()
-
-    user_content = "Evaluate these data flows for exploitability:\n\n"
-    for i, flow in enumerate(flows):
-        user_content += f"Flow {i}:\n{json.dumps(flow, indent=2)}\n\n"
-
-    user_content += "\nRelevant source code:\n\n"
-    for path, code in source_code.items():
-        # Truncate each file to keep within limits
-        truncated = code[:20_000] if len(code) > 20_000 else code
-        user_content += f"=== {path} ===\n```\n{truncated}\n```\n\n"
-
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": DATAFLOW_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-        functions=[DATAFLOW_FUNCTION_SCHEMA],
-        function_call={"name": "report_dataflow_assessment"},
-        temperature=0.1,
-    )
-
-    usage = _extract_usage(response)
-    message = response.choices[0].message
-
-    if not message.function_call:
-        return [], usage
-
-    try:
-        data = json.loads(message.function_call.arguments)
-    except json.JSONDecodeError:
-        return [], usage
-
-    return data.get("assessments", []), usage
-
-
-# ── Test quality scanning ──────────────────────────────────────────────
-
-
-def scan_test_quality_llm(
-    source_content: str,
-    source_path: str,
-    test_content: str | None = None,
-    test_path: str | None = None,
-    language: str = "python",
-) -> tuple[list[LLMFinding], LLMUsage]:
-    """Analyze test coverage gaps using the LLM."""
-    client = _get_client()
-    model = _get_model()
-
-    user_content = build_test_quality_context(
-        source_path, source_content, test_path, test_content, language,
-    )
-
-    if len(user_content) > 60_000:
-        user_content = user_content[:60_000] + "\n\n... [truncated]"
-
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": TEST_QUALITY_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-        functions=[TEST_QUALITY_FUNCTION_SCHEMA],
-        function_call={"name": "report_test_quality"},
-        temperature=0.1,
-    )
-
-    usage = _extract_usage(response)
-    message = response.choices[0].message
-
-    if not message.function_call:
-        return [], usage
-
-    try:
-        data = json.loads(message.function_call.arguments)
-    except json.JSONDecodeError:
-        return [], usage
-
-    findings: list[LLMFinding] = []
-    for item in data.get("findings", []):
-        category = item.get("category", "TQ01")
-        title = item.get("title", "Unknown")
-        findings.append(LLMFinding(
-            owasp_category=category,
-            severity=item.get("severity", "medium"),
-            title=title,
-            description=item.get("description", ""),
-            line_number=None,
-            suggested_fix=item.get("suggested_test", ""),
-            confidence=item.get("confidence", 0.5),
-            rule_id=f"llm-{category}-{_slugify(title)}",
-        ))
-    return findings, usage
-
-
-def suggest_tests_llm(
-    source_content: str,
-    source_path: str,
-    language: str = "python",
-) -> tuple[list[dict[str, Any]], LLMUsage]:
-    """Generate test skeletons for untested code."""
-    client = _get_client()
-    model = _get_model()
-
-    user_content = (
-        f"Source File: {source_path}\nLanguage: {language}\n\n"
-        f"```\n{source_content[:30000]}\n```"
-    )
-
-    response = client.chat.completions.create(
-        model=model,
-        messages=[
-            {"role": "system", "content": SUGGEST_TESTS_SYSTEM_PROMPT},
-            {"role": "user", "content": user_content},
-        ],
-        functions=[SUGGEST_TESTS_FUNCTION_SCHEMA],
-        function_call={"name": "suggest_tests"},
-        temperature=0.2,
-    )
-
-    usage = _extract_usage(response)
-    message = response.choices[0].message
-
-    if not message.function_call:
-        return [], usage
-
-    try:
-        data = json.loads(message.function_call.arguments)
-    except json.JSONDecodeError:
-        return [], usage
-
-    return data.get("suggestions", []), usage

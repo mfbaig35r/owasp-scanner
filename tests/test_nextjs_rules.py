@@ -77,14 +77,6 @@ class TestJSA02:
         code = "images: { remotePatterns: [{ hostname: 'cdn.example.com' }] }"
         assert len(_scan(code, "JS-A02-002", filename="next.config.js")) == 0
 
-    def test_003_strict_mode_false_matches(self):
-        code = "reactStrictMode: false"
-        assert len(_scan(code, "JS-A02-003", filename="next.config.js")) > 0
-
-    def test_003_strict_mode_true_no_match(self):
-        code = "reactStrictMode: true"
-        assert len(_scan(code, "JS-A02-003", filename="next.config.js")) == 0
-
     def test_005_internal_rewrite_matches(self):
         code = "destination: 'http://localhost:3001/api'"
         assert len(_scan(code, "JS-A02-005", filename="next.config.js")) > 0
@@ -163,10 +155,6 @@ class TestJSA05:
         code = "execFile('rm', ['-rf', path])"
         assert len(_scan(code, "JS-A05-006")) == 0
 
-    def test_007_document_write_matches(self):
-        code = "document.write(html)"
-        assert len(_scan(code, "JS-A05-007")) > 0
-
     def test_008_router_push_var_matches(self):
         code = "router.push(url)"
         assert len(_scan(code, "JS-A05-008")) > 0
@@ -229,3 +217,101 @@ class TestJSA10:
     def test_002_generic_error_no_match(self):
         code = "return Response.json({ error: 'Internal server error' })"
         assert len(_scan(code, "JS-A10-002")) == 0
+
+
+# ── Boundary Analysis ─────────────────────────────────────────────────────
+
+
+class TestBoundaryAnalysis:
+    def _setup_nextjs_project(self, tmp_path):
+        """Create a minimal Next.js project structure."""
+        (tmp_path / "package.json").write_text(
+            '{"dependencies": {"next": "15.0.0", "react": "19.0.0"}}',
+        )
+        app_dir = tmp_path / "app"
+        app_dir.mkdir()
+        return app_dir
+
+    def test_detects_sensitive_prop_crossing(self, tmp_path):
+        from owasp_scanner.core.nextjs import analyze_boundary_crossings
+
+        app_dir = self._setup_nextjs_project(tmp_path)
+
+        # Client component
+        client = app_dir / "UserCard.tsx"
+        client.write_text(
+            "'use client'\n"
+            "export default function UserCard({ user }) {"
+            " return <div>{user.name}</div> }",
+        )
+
+        # Server component passing full user to client
+        server = app_dir / "page.tsx"
+        server.write_text(
+            "import UserCard from './UserCard'\n"
+            "export default async function Page() {\n"
+            "  const user = await getUser()\n"
+            "  return <UserCard user={user} />\n"
+            "}\n"
+        )
+
+        crossings = analyze_boundary_crossings(tmp_path)
+        assert len(crossings) == 1
+        assert crossings[0]["client_component"] == "UserCard"
+        assert crossings[0]["risk_level"] == "high"
+        assert any(p["name"] == "user" for p in crossings[0]["props"])
+
+    def test_no_crossings_without_client_components(self, tmp_path):
+        from owasp_scanner.core.nextjs import analyze_boundary_crossings
+
+        app_dir = self._setup_nextjs_project(tmp_path)
+
+        # Server component only — no client imports
+        server = app_dir / "page.tsx"
+        server.write_text(
+            "export default async function Page() {\n"
+            "  return <div>Hello</div>\n"
+            "}\n"
+        )
+
+        crossings = analyze_boundary_crossings(tmp_path)
+        assert len(crossings) == 0
+
+    def test_non_sensitive_props_medium_risk(self, tmp_path):
+        from owasp_scanner.core.nextjs import analyze_boundary_crossings
+
+        app_dir = self._setup_nextjs_project(tmp_path)
+
+        client = app_dir / "Chart.tsx"
+        client.write_text(
+            "'use client'\n"
+            "export default function Chart({ data }) {"
+            " return <div /> }",
+        )
+
+        server = app_dir / "page.tsx"
+        server.write_text(
+            "import Chart from './Chart'\n"
+            "export default function Page() {\n"
+            "  return <Chart data={chartData} />\n"
+            "}\n"
+        )
+
+        crossings = analyze_boundary_crossings(tmp_path)
+        assert len(crossings) == 1
+        assert crossings[0]["risk_level"] == "medium"
+
+    def test_scan_boundary_tool_not_nextjs(self, tmp_path):
+        """scan_boundary on a non-Next.js project should error."""
+        import asyncio
+        from unittest.mock import patch as mock_patch
+
+        from owasp_scanner.server import scan_boundary
+
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'myapp'")
+
+        with mock_patch("owasp_scanner.server.get_db"):
+            result = asyncio.get_event_loop().run_until_complete(
+                scan_boundary(str(tmp_path)),
+            )
+        assert "error" in result

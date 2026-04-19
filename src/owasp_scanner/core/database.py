@@ -223,6 +223,9 @@ class Database:
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
             self._run_migrations(conn)
+        # Restrict DB file — it stores code snippets that may contain secrets
+        if self._db_path.exists():
+            self._db_path.chmod(0o600)
 
     def _run_migrations(self, conn: sqlite3.Connection) -> None:
         """Apply schema migrations for existing databases."""
