@@ -235,6 +235,74 @@ def scan_fastapi_config(content: str) -> list[ConfigCheck]:
     return checks
 
 
+def scan_nextjs_config(content: str) -> list[ConfigCheck]:
+    """Scan next.config.js content for security misconfigurations."""
+    checks: list[ConfigCheck] = []
+
+    # Security headers
+    if "headers" not in content or "async headers" not in content:
+        checks.append(ConfigCheck(
+            setting="Security headers",
+            expected="headers() function with CSP, HSTS, X-Frame-Options",
+            actual="No headers configuration found",
+            severity="medium",
+            title="Missing security headers in next.config.js",
+            description="Security headers (CSP, HSTS, X-Frame-Options) should be configured in next.config.js or middleware.",
+        ))
+
+    # Wildcard image hostname
+    if re.search(r"""hostname\s*:\s*['"][*]{2}['"]""", content):
+        checks.append(ConfigCheck(
+            setting="images.remotePatterns",
+            expected="Specific hostnames",
+            actual="hostname: '**' (wildcard)",
+            severity="high",
+            title="Wildcard image hostname enables SSRF",
+            description="Setting hostname to '**' allows next/image to fetch from any URL, enabling SSRF via /_next/image.",
+        ))
+
+    # Rewrites to internal services
+    if re.search(
+        r"destination\s*:\s*['\"]https?://(?:localhost|127\.0\.0\.1|10\.|192\.168\.)",
+        content,
+        re.IGNORECASE,
+    ):
+        checks.append(ConfigCheck(
+            setting="rewrites",
+            expected="No direct proxy to internal services",
+            actual="Rewrite to localhost/private IP detected",
+            severity="high",
+            title="Rewrite proxying to internal service",
+            description="Rewrites to internal services can expose them to the internet. Use authenticated API routes instead.",
+        ))
+
+    # poweredByHeader
+    if "poweredByHeader" not in content or re.search(
+        r"poweredByHeader\s*:\s*true", content, re.IGNORECASE,
+    ):
+        checks.append(ConfigCheck(
+            setting="poweredByHeader",
+            expected="false",
+            actual="true or not set",
+            severity="low",
+            title="X-Powered-By header reveals Next.js",
+            description="The X-Powered-By header reveals the framework. Set poweredByHeader: false.",
+        ))
+
+    # reactStrictMode
+    if re.search(r"reactStrictMode\s*:\s*false", content, re.IGNORECASE):
+        checks.append(ConfigCheck(
+            setting="reactStrictMode",
+            expected="true",
+            actual="false",
+            severity="medium",
+            title="React strict mode disabled",
+            description="Strict mode helps catch unsafe patterns during development.",
+        ))
+
+    return checks
+
+
 def scan_general_config(content: str) -> list[ConfigCheck]:
     """General security checks for any Python application or config file."""
     checks: list[ConfigCheck] = []
@@ -280,7 +348,7 @@ def scan_general_config(content: str) -> list[ConfigCheck]:
 
 
 def detect_framework(content: str) -> str:
-    """Detect whether content is Django settings, FastAPI, Flask, or MCP server code."""
+    """Detect framework from file content."""
     django_signals = [
         "INSTALLED_APPS", "MIDDLEWARE", "ROOT_URLCONF",
         "DATABASES", "TEMPLATES", "STATIC_URL",
@@ -296,12 +364,18 @@ def detect_framework(content: str) -> str:
         "FastMCP(", "from mcp", "@mcp.tool()", "mcp.run()",
         "from mcp.server", "@mcp.tool",
     ]
+    nextjs_signals = [
+        "NextConfig", "next.config", "remotePatterns",
+        "from next/", "import next/", "'use client'",
+        "'use server'", "NextResponse", "NextRequest",
+    ]
 
     scores = {
         "django": sum(1 for s in django_signals if s in content),
         "fastapi": sum(1 for s in fastapi_signals if s in content),
         "flask": sum(1 for s in flask_signals if s in content),
         "mcp": sum(1 for s in mcp_signals if s in content),
+        "nextjs": sum(1 for s in nextjs_signals if s in content),
     }
 
     best = max(scores, key=scores.get)

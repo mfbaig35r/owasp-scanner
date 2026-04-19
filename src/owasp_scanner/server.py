@@ -20,6 +20,7 @@ from owasp_scanner.core.config_scanner import (
     scan_django_settings,
     scan_fastapi_config,
     scan_general_config,
+    scan_nextjs_config,
 )
 from owasp_scanner.core.database import get_db
 from owasp_scanner.core.pip_audit import run_pip_audit
@@ -89,6 +90,11 @@ async def scan_directory(
                 if line and not line.startswith("#"):
                     all_excludes.append(line)
 
+        # Detect project type
+        from owasp_scanner.core.nextjs import detect_project_type
+
+        proj_type = detect_project_type(target) if target.is_dir() else "unknown"
+
         db = get_db()
         scope = "directory" if target.is_dir() else "file"
         categories_json = json.dumps([owasp_category]) if owasp_category else None
@@ -100,6 +106,7 @@ async def scan_directory(
             owasp_category=owasp_category,
             severity=severity,
             exclude=all_excludes or None,
+            project_type=proj_type,
         )
 
         db.complete_scan(scan.id, findings_count=len(result.findings))
@@ -116,6 +123,7 @@ async def scan_directory(
             "target": str(target),
             "scope": scope,
             "mode": mode,
+            "project_type": proj_type,
             "total_findings": len(result.findings),
             "new_findings": result.new_count,
             "existing_findings": result.existing_count,
@@ -271,6 +279,8 @@ async def scan_config(
             config_checks = scan_django_settings(content)
         elif fw == "fastapi":
             config_checks = scan_fastapi_config(content)
+        elif fw == "nextjs":
+            config_checks = scan_nextjs_config(content)
         else:
             # Fall back to general checks for unknown, mcp, flask, etc.
             config_checks = scan_general_config(content)
@@ -535,6 +545,13 @@ async def deep_analyze(path: str) -> dict[str, Any]:
             # MCP tools
             if re.match(r"^\s*@mcp\.tool\s*\(", stripped):
                 endpoints.append({"line": i, "type": "mcp_tool", "detail": stripped})
+            # Next.js route handlers
+            if re.match(r"^\s*export\s+(?:async\s+)?function\s+(?:GET|POST|PUT|DELETE|PATCH)\s*\(", stripped):
+                endpoints.append({"line": i, "type": "route_handler", "detail": stripped})
+            # Next.js server actions
+            if re.match(r"^\s*export\s+(?:async\s+)?function\s+\w+\s*\(", stripped):
+                if "'use server'" in content or '"use server"' in content:
+                    endpoints.append({"line": i, "type": "server_action", "detail": stripped})
             # Django views
             if re.match(r"^\s*def\s+\w+.*request", stripped):
                 endpoints.append({"line": i, "type": "handler", "detail": stripped})
@@ -598,6 +615,35 @@ async def deep_analyze(path: str) -> dict[str, Any]:
                     "check": "Data Exfiltration Surface",
                     "question": "Could tool responses leak sensitive data (env vars, secrets, file contents)?",
                     "look_for": "tools that read files, environment, or configs and return raw content",
+                },
+            ])
+
+        if framework == "nextjs":
+            base_checklist.extend([
+                {
+                    "check": "Server/Client Boundary",
+                    "question": "Are props passed from Server Components to Client Components minimized to only what the UI needs?",
+                    "look_for": "Full ORM objects passed as props, objects named user/session/token crossing the boundary",
+                },
+                {
+                    "check": "Server Action Authorization",
+                    "question": "Does every Server Action verify auth at the function level (not just middleware)?",
+                    "look_for": "'use server' functions without auth checks, reliance on middleware-only auth",
+                },
+                {
+                    "check": "Route Handler Auth",
+                    "question": "Do route handlers (route.ts) check authentication and authorization?",
+                    "look_for": "GET/POST/PUT/DELETE exports without session/auth validation",
+                },
+                {
+                    "check": "Middleware Coverage",
+                    "question": "Does the middleware matcher cover all routes that need protection, including /api/?",
+                    "look_for": "matcher array, gaps in route coverage, auth bypassed for certain paths",
+                },
+                {
+                    "check": "Mass Assignment",
+                    "question": "Are Server Actions using Object.fromEntries(formData) directly in ORM updates?",
+                    "look_for": "Object.fromEntries spread into prisma.update/create without field allowlist",
                 },
             ])
 

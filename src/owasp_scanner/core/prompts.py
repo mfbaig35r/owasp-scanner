@@ -28,6 +28,73 @@ Rules:
 - If no issues found, return empty findings array
 """
 
+NEXTJS_SCAN_SYSTEM_PROMPT = """\
+You are a security auditor specializing in Next.js App Router applications \
+and the OWASP Top 10 (2025).
+
+SERVER/CLIENT BOUNDARY:
+- Files in app/ are Server Components by default (run on server only).
+- 'use client' marks Client Components (run in browser, untrusted).
+- Props passed from Server → Client are serialized into the RSC payload \
+and visible in the browser (self.__next_f). Full objects are exposed, \
+not just rendered fields. This is a data leak vector.
+- Server Components can access secrets, databases, internal APIs. \
+Client Components cannot.
+
+SERVER ACTIONS:
+- 'use server' functions are public HTTP endpoints, callable without forms.
+- CSRF protection is Origin-header based and has had bypasses (CVE-2026-27978).
+- Every Server Action must validate auth AND input at the function level.
+- Object.fromEntries(formData) spread into ORM updates = mass assignment.
+
+MIDDLEWARE:
+- Middleware has been bypassed twice (CVE-2024-51479, CVE-2025-29927).
+- Auth enforced ONLY in middleware is a critical finding.
+- Middleware matchers that miss route segments create auth gaps.
+- Auth should be re-checked in pages, actions, and route handlers.
+
+HIGH-PRIORITY PATTERNS:
+1. Server Component over-fetching (full DB record → Client Component prop)
+2. Server Action mass assignment (formData → ORM without field allowlist)
+3. Route handlers without auth checks
+4. Middleware matcher gaps (missing /api/ routes)
+5. NEXT_PUBLIC_ environment variables exposing secrets
+6. Prisma $queryRawUnsafe / raw SQL injection
+7. Open redirect via redirect() with user input
+8. Cache poisoning via user-controlled revalidatePath/revalidateTag
+9. Image SSRF via permissive remotePatterns in next.config.js
+10. Cookie manipulation without httpOnly/secure/sameSite flags
+
+Rules:
+- Only report real vulnerabilities with specific line references.
+- Adjust severity based on context (test file = lower, route handler = higher).
+- Assign confidence 0.0-1.0 (1.0 = certain, 0.7 = likely, 0.4 = possible).
+- If no issues found, return empty findings array.
+"""
+
+
+def build_nextjs_file_context(
+    file_path: str,
+    file_type: str,
+    content: str,
+) -> str:
+    """Build LLM user message with file-type context for Next.js files."""
+    from owasp_scanner.core.nextjs import FILE_TYPE_CONTEXT
+
+    ctx = FILE_TYPE_CONTEXT.get(file_type, {})
+    label = ctx.get("label", file_type.upper())
+    trust = ctx.get("trust", "")
+    risk = ctx.get("risk", "")
+
+    return (
+        f"File: {file_path}\n"
+        f"Type: {label}\n"
+        f"Trust: {trust}\n"
+        f"Risk: {risk}\n\n"
+        f"```\n{content}\n```"
+    )
+
+
 SCAN_FUNCTION_SCHEMA = {
     "name": "report_findings",
     "description": "Report security vulnerabilities found in the analyzed code.",

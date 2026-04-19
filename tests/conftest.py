@@ -112,3 +112,90 @@ except ValueError:
     f = tmp_path / "clean.py"
     f.write_text(code)
     return f
+
+
+@pytest.fixture
+def sample_nextjs_app(tmp_path: Path) -> Path:
+    """Create a minimal Next.js App Router project with known vulnerabilities."""
+    root = tmp_path / "nextjs-app"
+    root.mkdir()
+
+    (root / "package.json").write_text(
+        '{"dependencies": {"next": "15.0.0", "react": "19.0.0"}}'
+    )
+
+    (root / "next.config.js").write_text(
+        "/** @type {import('next').NextConfig} */\n"
+        "module.exports = {\n"
+        "  images: { remotePatterns: [{ hostname: '**' }] },\n"
+        "  poweredByHeader: true,\n"
+        "  reactStrictMode: false,\n"
+        "}\n"
+    )
+
+    (root / "middleware.ts").write_text(
+        "import { NextResponse } from 'next/server'\n"
+        "export const config = { matcher: ['/dashboard/:path*'] }\n"
+        "export function middleware(request) {\n"
+        "  return NextResponse.next()\n"
+        "}\n"
+    )
+
+    (root / ".env").write_text(
+        "DATABASE_URL=postgresql://user:pass@localhost/db\n"
+        "NEXT_PUBLIC_SECRET_KEY=sk-proj-abc123def456\n"
+    )
+
+    app = root / "app"
+    app.mkdir()
+    (app / "page.tsx").write_text(
+        "export default function Home() { return <div>Hello</div> }\n"
+    )
+
+    dash = app / "dashboard"
+    dash.mkdir()
+    (dash / "page.tsx").write_text(
+        "import { ClientDashboard } from '@/components/Dashboard'\n"
+        "export default async function DashboardPage() {\n"
+        "  const user = await prisma.user.findUnique({ where: { id: userId } })\n"
+        "  return <ClientDashboard user={user} />\n"
+        "}\n"
+    )
+
+    api = app / "api" / "users"
+    api.mkdir(parents=True)
+    (api / "route.ts").write_text(
+        "import { prisma } from '@/lib/db'\n"
+        "export async function GET(request: Request) {\n"
+        "  const role = request.headers.get('role')\n"
+        "  const users = await prisma.$queryRawUnsafe("
+        "`SELECT * FROM users WHERE role = ${role}`)\n"
+        "  return Response.json(users)\n"
+        "}\n"
+    )
+
+    (app / "actions.ts").write_text(
+        "'use server'\n"
+        "export async function updateProfile(formData: FormData) {\n"
+        "  const data = Object.fromEntries(formData)\n"
+        "  await prisma.user.update({ where: { id: session.user.id }, data })\n"
+        "}\n"
+    )
+
+    comp = root / "components"
+    comp.mkdir()
+    (comp / "Dashboard.tsx").write_text(
+        "'use client'\n"
+        "export function ClientDashboard({ user }) {\n"
+        "  return <div>{user.name}</div>\n"
+        "}\n"
+    )
+
+    lib = root / "lib"
+    lib.mkdir()
+    (lib / "db.ts").write_text(
+        "import { PrismaClient } from '@prisma/client'\n"
+        "export const prisma = new PrismaClient()\n"
+    )
+
+    return root

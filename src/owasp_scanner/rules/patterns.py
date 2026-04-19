@@ -424,6 +424,11 @@ def get_rules(
     """
     result = list(RULES)
 
+    # Load Next.js rules
+    from owasp_scanner.rules.nextjs_patterns import NEXTJS_RULES
+
+    result.extend(NEXTJS_RULES)
+
     if include_plugins:
         from owasp_scanner.rules.loader import load_plugin_rules
 

@@ -120,7 +120,8 @@ def _collect_files(
     exclude_patterns = exclude or []
     files: list[Path] = []
     for item in sorted(target.rglob("*")):
-        if any(_should_skip_dir(part) for part in item.parts):
+        # Skip directories in SKIP_DIRS — but only check parent dirs, not the filename
+        if any(_should_skip_dir(part) for part in item.parent.parts):
             continue
         if exclude_patterns and _is_excluded(item, target, exclude_patterns):
             continue
@@ -319,6 +320,7 @@ async def scan_path_hybrid(
     owasp_category: str | None = None,
     severity: str | None = None,
     exclude: list[str] | None = None,
+    project_type: str | None = None,
 ) -> ScanResult:
     """Scan with regex, LLM, or hybrid mode.
 
@@ -391,15 +393,31 @@ async def scan_path_hybrid(
                     )
 
     # Step 3 (hybrid) or Step 1 (llm): LLM scan for design-level issues
+    scannable_for_llm = {".py"}
+    if project_type in ("nextjs", "react"):
+        scannable_for_llm.update({".ts", ".tsx", ".js", ".jsx"})
+
     for file_path in files:
-        if file_path.suffix != ".py":
+        if file_path.suffix not in scannable_for_llm:
             continue
         try:
             content = file_path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
 
-        llm_findings, _ = scan_file_llm(content, str(file_path))
+        # Classify file type for Next.js context
+        file_type = None
+        if project_type in ("nextjs", "react"):
+            from owasp_scanner.core.nextjs import classify_nextjs_file
+
+            project_root = target if target.is_dir() else target.parent
+            file_type = classify_nextjs_file(file_path, project_root)
+
+        llm_findings, _ = scan_file_llm(
+            content, str(file_path),
+            project_type=project_type or "python",
+            file_type=file_type,
+        )
 
         for lf in llm_findings:
             finding, is_new = db.create_finding(

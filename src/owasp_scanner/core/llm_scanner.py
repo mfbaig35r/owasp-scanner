@@ -16,10 +16,12 @@ from owasp_scanner.core.config import get_settings
 from owasp_scanner.core.prompts import (
     DATAFLOW_FUNCTION_SCHEMA,
     DATAFLOW_SYSTEM_PROMPT,
+    NEXTJS_SCAN_SYSTEM_PROMPT,
     SCAN_FUNCTION_SCHEMA,
     SCAN_SYSTEM_PROMPT,
     TRIAGE_FUNCTION_SCHEMA,
     TRIAGE_SYSTEM_PROMPT,
+    build_nextjs_file_context,
 )
 
 try:
@@ -153,13 +155,34 @@ def _extract_usage(response: Any) -> LLMUsage:
 def scan_file_llm(
     content: str,
     file_path: str,
+    project_type: str = "python",
+    file_type: str | None = None,
 ) -> tuple[list[LLMFinding], LLMUsage]:
     """Scan a file for security issues using the LLM.
+
+    Args:
+        content: File content to scan.
+        file_path: Path to the file (for context).
+        project_type: 'python', 'nextjs', or 'react' — selects system prompt.
+        file_type: Next.js file type for context block (server_component, etc).
 
     Returns (findings, usage).
     """
     client = _get_client()
     model = _get_model()
+
+    # Select system prompt based on project type
+    system_prompt = (
+        NEXTJS_SCAN_SYSTEM_PROMPT
+        if project_type in ("nextjs", "react")
+        else SCAN_SYSTEM_PROMPT
+    )
+
+    # Build user message with framework context
+    if project_type in ("nextjs", "react") and file_type:
+        user_content = build_nextjs_file_context(file_path, file_type, content)
+    else:
+        user_content = f"File: {file_path}\n\n```\n{content}\n```"
 
     # Truncate very large files
     if len(content) > 150_000:
@@ -168,8 +191,8 @@ def scan_file_llm(
     response = client.chat.completions.create(
         model=model,
         messages=[
-            {"role": "system", "content": SCAN_SYSTEM_PROMPT},
-            {"role": "user", "content": f"File: {file_path}\n\n```\n{content}\n```"},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
         ],
         functions=[SCAN_FUNCTION_SCHEMA],
         function_call={"name": "report_findings"},
