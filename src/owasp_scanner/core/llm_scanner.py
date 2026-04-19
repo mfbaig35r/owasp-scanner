@@ -19,9 +19,14 @@ from owasp_scanner.core.prompts import (
     NEXTJS_SCAN_SYSTEM_PROMPT,
     SCAN_FUNCTION_SCHEMA,
     SCAN_SYSTEM_PROMPT,
+    SUGGEST_TESTS_FUNCTION_SCHEMA,
+    SUGGEST_TESTS_SYSTEM_PROMPT,
+    TEST_QUALITY_FUNCTION_SCHEMA,
+    TEST_QUALITY_SYSTEM_PROMPT,
     TRIAGE_FUNCTION_SCHEMA,
     TRIAGE_SYSTEM_PROMPT,
     build_nextjs_file_context,
+    build_test_quality_context,
 )
 
 try:
@@ -351,3 +356,102 @@ def evaluate_dataflows(
         return [], usage
 
     return data.get("assessments", []), usage
+
+
+# ── Test quality scanning ──────────────────────────────────────────────
+
+
+def scan_test_quality_llm(
+    source_content: str,
+    source_path: str,
+    test_content: str | None = None,
+    test_path: str | None = None,
+    language: str = "python",
+) -> tuple[list[LLMFinding], LLMUsage]:
+    """Analyze test coverage gaps using the LLM."""
+    client = _get_client()
+    model = _get_model()
+
+    user_content = build_test_quality_context(
+        source_path, source_content, test_path, test_content, language,
+    )
+
+    if len(user_content) > 60_000:
+        user_content = user_content[:60_000] + "\n\n... [truncated]"
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": TEST_QUALITY_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        functions=[TEST_QUALITY_FUNCTION_SCHEMA],
+        function_call={"name": "report_test_quality"},
+        temperature=0.1,
+    )
+
+    usage = _extract_usage(response)
+    message = response.choices[0].message
+
+    if not message.function_call:
+        return [], usage
+
+    try:
+        data = json.loads(message.function_call.arguments)
+    except json.JSONDecodeError:
+        return [], usage
+
+    findings: list[LLMFinding] = []
+    for item in data.get("findings", []):
+        category = item.get("category", "TQ01")
+        title = item.get("title", "Unknown")
+        findings.append(LLMFinding(
+            owasp_category=category,
+            severity=item.get("severity", "medium"),
+            title=title,
+            description=item.get("description", ""),
+            line_number=None,
+            suggested_fix=item.get("suggested_test", ""),
+            confidence=item.get("confidence", 0.5),
+            rule_id=f"llm-{category}-{_slugify(title)}",
+        ))
+    return findings, usage
+
+
+def suggest_tests_llm(
+    source_content: str,
+    source_path: str,
+    language: str = "python",
+) -> tuple[list[dict[str, Any]], LLMUsage]:
+    """Generate test skeletons for untested code."""
+    client = _get_client()
+    model = _get_model()
+
+    user_content = (
+        f"Source File: {source_path}\nLanguage: {language}\n\n"
+        f"```\n{source_content[:30000]}\n```"
+    )
+
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {"role": "system", "content": SUGGEST_TESTS_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        functions=[SUGGEST_TESTS_FUNCTION_SCHEMA],
+        function_call={"name": "suggest_tests"},
+        temperature=0.2,
+    )
+
+    usage = _extract_usage(response)
+    message = response.choices[0].message
+
+    if not message.function_call:
+        return [], usage
+
+    try:
+        data = json.loads(message.function_call.arguments)
+    except json.JSONDecodeError:
+        return [], usage
+
+    return data.get("suggestions", []), usage

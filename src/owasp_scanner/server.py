@@ -1026,6 +1026,178 @@ async def delete_finding(finding_id: str) -> dict[str, Any]:
         return {"error": str(exc), "error_id": error_id}
 
 
+# ── Test Quality Tools ──────────────────────────────────────────────────────
+
+
+@mcp.tool()
+async def scan_test_quality(
+    path: str,
+    language: str = "auto",
+    exclude: list[str] | None = None,
+    mode: str = "regex",
+) -> dict[str, Any]:
+    """Scan a project for test quality gaps: missing tests, weak assertions, untested error paths.
+
+    Args:
+        path: Absolute path to the project root.
+        language: 'python', 'rust', 'hybrid', or 'auto' (detect).
+        exclude: Path patterns to exclude.
+        mode: 'regex' (free, fast) or 'llm' (smart, uses API).
+    """
+    try:
+        from owasp_scanner.core.test_analyzer import scan_project_test_quality
+        from owasp_scanner.rules.test_quality_patterns import TEST_QUALITY_CATEGORIES
+
+        target = Path(path).resolve()
+        if not target.is_dir():
+            return {"error": f"Not a directory: {path}"}
+
+        db = get_db()
+        scan = db.create_scan(
+            scope="directory", target_path=str(target),
+            categories='["test_quality"]',
+        )
+
+        result = await scan_project_test_quality(
+            target, db, scan.id,
+            language=language, exclude=exclude, mode=mode,
+        )
+
+        db.complete_scan(scan.id, findings_count=len(result.findings))
+
+        by_category: dict[str, int] = {}
+        for f in result.findings:
+            by_category[f.owasp_category] = by_category.get(f.owasp_category, 0) + 1
+
+        return {
+            "scan_id": scan.id,
+            "target": str(target),
+            "mode": mode,
+            "total_findings": len(result.findings),
+            "new_findings": result.new_count,
+            "existing_findings": result.existing_count,
+            "by_category": {
+                cat: {
+                    "label": TEST_QUALITY_CATEGORIES.get(cat, cat),
+                    "count": count,
+                }
+                for cat, count in sorted(by_category.items())
+            },
+            "findings": [f.to_dict() for f in result.findings[:50]],
+        }
+    except Exception as exc:
+        error_id = errors.log_error("scan_test_quality", exc, {"path": path})
+        return {"error": str(exc), "error_id": error_id}
+
+
+@mcp.tool()
+async def analyze_test_coverage(
+    source_file: str,
+    test_file: str | None = None,
+) -> dict[str, Any]:
+    """Deep analysis of test coverage for a single source file.
+
+    Args:
+        source_file: Path to the source file to analyze.
+        test_file: Path to its test file (auto-detected if None).
+    """
+    try:
+        from owasp_scanner.core.llm_scanner import is_available, scan_test_quality_llm
+        from owasp_scanner.core.test_pairing import pair_source_to_tests
+
+        source = Path(source_file).resolve()
+        if not source.is_file():
+            return {"error": f"Not a file: {source_file}"}
+
+        source_content = source.read_text(encoding="utf-8", errors="replace")
+        lang = "rust" if source.suffix == ".rs" else "python"
+
+        # Auto-pair if test_file not provided
+        test_content = None
+        test_path = test_file
+        if test_file:
+            tp = Path(test_file).resolve()
+            if tp.is_file():
+                test_content = tp.read_text(encoding="utf-8", errors="replace")
+                test_path = str(tp)
+        else:
+            pairs = pair_source_to_tests(
+                source.parent, source_files=[source], language=lang,
+            )
+            if pairs and pairs[0].candidates:
+                best = pairs[0].candidates[0]
+                if best.test_path.is_file():
+                    test_path = str(best.test_path)
+                    test_content = best.test_path.read_text(
+                        encoding="utf-8", errors="replace",
+                    )
+
+        if not is_available():
+            return {
+                "error": "LLM required for test coverage analysis. "
+                "Set OWASP_OPENAI_API_KEY and OWASP_LLM_ENABLED=true.",
+            }
+
+        findings, usage = scan_test_quality_llm(
+            source_content, str(source),
+            test_content, test_path,
+            language=lang,
+        )
+
+        return {
+            "source_file": str(source),
+            "test_file": test_path,
+            "language": lang,
+            "total_gaps": len(findings),
+            "gaps": [f.to_dict() for f in findings],
+            "llm_usage": usage.to_dict(),
+        }
+    except Exception as exc:
+        error_id = errors.log_error("analyze_test_coverage", exc)
+        return {"error": str(exc), "error_id": error_id}
+
+
+@mcp.tool()
+async def suggest_tests(
+    source_file: str,
+    max_suggestions: int = 5,
+) -> dict[str, Any]:
+    """Generate test skeletons for untested code in a source file.
+
+    Args:
+        source_file: Path to the source file.
+        max_suggestions: Maximum number of test suggestions (default 5).
+    """
+    try:
+        from owasp_scanner.core.llm_scanner import is_available, suggest_tests_llm
+
+        source = Path(source_file).resolve()
+        if not source.is_file():
+            return {"error": f"Not a file: {source_file}"}
+
+        if not is_available():
+            return {
+                "error": "LLM required for test suggestions. "
+                "Set OWASP_OPENAI_API_KEY and OWASP_LLM_ENABLED=true.",
+            }
+
+        content = source.read_text(encoding="utf-8", errors="replace")
+        lang = "rust" if source.suffix == ".rs" else "python"
+
+        suggestions, usage = suggest_tests_llm(content, str(source), language=lang)
+
+        return {
+            "source_file": str(source),
+            "language": lang,
+            "total_suggestions": len(suggestions[:max_suggestions]),
+            "suggestions": suggestions[:max_suggestions],
+            "llm_usage": usage.to_dict(),
+        }
+    except Exception as exc:
+        error_id = errors.log_error("suggest_tests", exc)
+        return {"error": str(exc), "error_id": error_id}
+
+
 # ── LLM Tools ──────────────────────────────────────────────────────────────
 
 

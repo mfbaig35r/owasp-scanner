@@ -267,3 +267,110 @@ DATAFLOW_FUNCTION_SCHEMA = {
         "required": ["assessments"],
     },
 }
+
+# ── Test Quality ───────────────────────────────────────────────────────
+
+TEST_QUALITY_SYSTEM_PROMPT = """\
+You are a test quality auditor. You will receive a source file and its \
+corresponding test file(s). Analyze the test coverage and identify gaps.
+
+For each public function/method in the source file:
+1. Does a corresponding test exist?
+2. How many code paths does the function have?
+3. How many of those paths are exercised by tests?
+4. What edge cases are missing?
+5. Is the test actually testing behavior, or just calling the function?
+
+For Rust: check unsafe blocks, .unwrap(), enum variants, error paths, generics.
+For PyO3: check Python API tests, dtype conversions, error messages, GIL release.
+
+Assign confidence 0.0-1.0. Severity: critical (no tests), high (missing error \
+path), medium (missing edge case), low (style issue).
+"""
+
+TEST_QUALITY_FUNCTION_SCHEMA = {
+    "name": "report_test_quality",
+    "description": "Report test quality findings.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "findings": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "category": {
+                            "type": "string",
+                            "enum": [
+                                "TQ01", "TQ02", "TQ03", "TQ04", "TQ05",
+                                "TQ06", "TQ07", "TQ08", "TQ09", "TQ10",
+                            ],
+                        },
+                        "severity": {
+                            "type": "string",
+                            "enum": ["critical", "high", "medium", "low"],
+                        },
+                        "title": {"type": "string"},
+                        "description": {"type": "string"},
+                        "source_function": {"type": "string"},
+                        "suggested_test": {"type": "string"},
+                        "confidence": {
+                            "type": "number", "minimum": 0, "maximum": 1,
+                        },
+                    },
+                    "required": [
+                        "category", "severity", "title",
+                        "description", "confidence",
+                    ],
+                },
+            },
+        },
+        "required": ["findings"],
+    },
+}
+
+SUGGEST_TESTS_SYSTEM_PROMPT = """\
+You are a test engineer. Given a source file, identify untested functions \
+and generate test skeletons with meaningful assertions. For Python: pytest \
+functions. For Rust: #[test] functions with assert!/assert_eq!.
+"""
+
+SUGGEST_TESTS_FUNCTION_SCHEMA = {
+    "name": "suggest_tests",
+    "description": "Generate test skeletons for untested code.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "suggestions": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "function_name": {"type": "string"},
+                        "test_code": {"type": "string"},
+                        "rationale": {"type": "string"},
+                    },
+                    "required": ["function_name", "test_code", "rationale"],
+                },
+            },
+        },
+        "required": ["suggestions"],
+    },
+}
+
+
+def build_test_quality_context(
+    source_path: str,
+    source_content: str,
+    test_path: str | None,
+    test_content: str | None,
+    language: str = "python",
+) -> str:
+    """Build LLM user message with source + test file context."""
+    msg = f"Source File: {source_path}\nLanguage: {language}\n\n"
+    msg += f"SOURCE:\n```\n{source_content[:30000]}\n```\n\n"
+    if test_path and test_content:
+        msg += f"Test File: {test_path}\n\nTESTS:\n```\n{test_content[:30000]}\n```"
+    else:
+        msg += "Test File: NOT FOUND\n"
+    return msg
