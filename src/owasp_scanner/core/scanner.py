@@ -17,6 +17,40 @@ from owasp_scanner.rules.severity import adjust_severity
 # Pattern for inline suppression comments: # owasp-ignore: A05-001, A05
 _SUPPRESSION_RE = re.compile(r"#\s*owasp-ignore:\s*([\w\-,\s]+)")
 
+# Imports that indicate a network-facing project
+_NETWORK_IMPORT_PATTERNS = [
+    re.compile(
+        r"^\s*(?:from|import)\s+(?:fastapi|flask|django|aiohttp\.web|tornado\.web|sanic)",
+        re.MULTILINE,
+    ),
+    re.compile(r"^\s*(?:from|import)\s+(?:uvicorn|gunicorn|hypercorn|waitress)", re.MULTILINE),
+    re.compile(r"^\s*(?:from|import)\s+(?:fastmcp|mcp\.server)", re.MULTILINE),
+    re.compile(r"^\s*(?:from|import)\s+(?:socketserver|http\.server|xmlrpc\.server)", re.MULTILINE),
+    re.compile(r"^\s*(?:from|import)\s+(?:starlette)", re.MULTILINE),
+]
+
+_SURFACE_SKIP_DIRS = {"__pycache__", ".venv", "venv", "node_modules", ".git", ".tox", ".mypy_cache"}
+
+
+def detect_network_surface(project_root: Path) -> str:
+    """Check if a project has network-facing components.
+
+    Scans Python files for imports of web frameworks, MCP servers, and
+    ASGI/WSGI servers. Returns early on first match.
+
+    Returns 'local' if no network surface detected, 'network' otherwise.
+    """
+    for py_file in project_root.rglob("*.py"):
+        if any(part in _SURFACE_SKIP_DIRS or part.startswith(".") for part in py_file.parts):
+            continue
+        try:
+            content = py_file.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for pat in _NETWORK_IMPORT_PATTERNS:
+            if pat.search(content):
+                return "network"
+    return "local"
 
 
 # Directories to always skip
@@ -162,6 +196,7 @@ def scan_file_content(
         rules = get_rules()
 
     matches: list[RuleMatch] = []
+    seen: set[tuple[str, int]] = set()  # (rule_id, line_number) for dedup
     lines = content.split("\n")
     path = Path(file_path)
 
@@ -181,6 +216,7 @@ def scan_file_content(
                         line_number=i,
                         line_content=line,
                     ))
+                    seen.add((rule.id, i))
 
         # Also search across multi-line blocks (for patterns spanning lines)
         # e.g., @login_required\n followed by no authz decorator
@@ -189,19 +225,17 @@ def scan_file_content(
             matched_line = lines[line_num - 1] if line_num <= len(lines) else ""
             if rule.exclude_pattern and rule.exclude_pattern.search(matched_line):
                 continue  # Suppressed by exclude_pattern
-            # Avoid duplicates from line-by-line scan
-            if not any(
-                rm.rule.id == rule.id and rm.line_number == line_num
-                for rm in matches
-            ):
-                if not _is_suppressed(lines, line_num, rule):
-                    matched_text = m.group(0).split("\n")[0]
-                    matches.append(RuleMatch(
-                        rule=rule,
-                        file_path=file_path,
-                        line_number=line_num,
-                        line_content=matched_text,
-                    ))
+            if (rule.id, line_num) in seen:
+                continue  # Already found in line-by-line scan
+            if not _is_suppressed(lines, line_num, rule):
+                matched_text = m.group(0).split("\n")[0]
+                matches.append(RuleMatch(
+                    rule=rule,
+                    file_path=file_path,
+                    line_number=line_num,
+                    line_content=matched_text,
+                ))
+                seen.add((rule.id, line_num))
 
     return matches
 

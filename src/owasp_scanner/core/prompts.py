@@ -343,3 +343,68 @@ TRIAGE_FUNCTION_SCHEMA = {
         "required": ["assessments"],
     },
 }
+
+# ── Security Audit Prompt ─────────────────────────────────────────────────
+
+SECURITY_AUDIT_TEMPLATE = """\
+Run a comprehensive security audit on: {path}
+
+## Workflow
+
+1. **Scan the project:**
+   Call `scan_directory` with the project path to get regex findings.
+
+2. **Check dependencies:**
+   Call `scan_dependencies` with the project path to check for known CVEs.
+
+3. **Check configuration:**
+   Find settings/config files and call `scan_config` on each.
+
+4. **Deep analysis on high-value files:**
+   For each file that has findings or is a route handler / API endpoint,
+   call `scan_file(path, mode="deep")` and review the security checklist
+   against the code. If you find design-level issues (missing auth, missing
+   rate limiting, missing logging, trust boundary violations), persist them
+   using `create_finding`.
+
+5. **Persist design-level findings:**
+   For every issue you identify from deep analysis, call `create_finding` with:
+   - `file_path`: the file where the issue is
+   - `owasp_category`: A01-A10 (use A06 for design issues, A09 for missing logging)
+   - `severity`: critical / high / medium / low
+   - `title`: concise description (e.g., "No rate limiting on login endpoint")
+   - `description`: explain what's wrong and why it matters
+   - `line_number`: if applicable
+   - `suggested_fix`: concrete remediation step
+
+6. **Generate report:**
+   Call `export_report()` to get the full markdown report.
+
+## Output Format
+
+Present your findings as:
+
+### Summary
+- Total findings (regex + your analysis)
+- Breakdown by severity
+- Top 3 most urgent issues with one-line explanations
+
+### Critical & High Findings
+For each critical/high finding:
+- **[SEVERITY] Title** \u2014 `file:line`
+  Description of the vulnerability and its impact.
+  **Fix:** concrete remediation step.
+
+### Design Issues (from deep analysis)
+Issues you found that regex couldn't \u2014 missing controls, insecure patterns,
+trust boundary violations. These are often the most important findings.
+
+### Dependency Vulnerabilities
+CVEs found by pip-audit, with upgrade paths.
+
+### Configuration Issues
+Misconfigurations found in settings files.
+
+### Recommendations
+Prioritized next steps: what to fix first and why.
+"""

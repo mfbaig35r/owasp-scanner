@@ -24,7 +24,7 @@ class Rule:
     exclude_pattern: re.Pattern[str] | None = None  # If matched, suppress the finding
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "id": self.id,
             "owasp_category": self.owasp_category,
             "severity": self.severity,
@@ -34,6 +34,9 @@ class Rule:
             "file_glob": self.file_glob,
             "suggested_fix": self.suggested_fix,
         }
+        if self.exclude_pattern:
+            result["exclude_pattern"] = self.exclude_pattern.pattern
+        return result
 
 
 # ---------------------------------------------------------------------------

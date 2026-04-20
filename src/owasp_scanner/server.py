@@ -43,69 +43,9 @@ def security_audit(path: str) -> list[dict]:
     Args:
         path: Absolute path to the project root.
     """
-    return [{"role": "user", "content": f"""\
-Run a comprehensive security audit on: {path}
+    from owasp_scanner.core.prompts import SECURITY_AUDIT_TEMPLATE
 
-## Workflow
-
-1. **Scan the project:**
-   Call `scan_directory("{path}")` to get regex findings across all files.
-
-2. **Check dependencies:**
-   Call `scan_dependencies("{path}")` to check for known CVEs.
-
-3. **Check configuration:**
-   Find settings/config files and call `scan_config(path)` on each.
-
-4. **Deep analysis on high-value files:**
-   For each file that has findings or is a route handler / API endpoint,
-   call `scan_file(path, mode="deep")` and review the security checklist
-   against the code. If you find design-level issues (missing auth, missing
-   rate limiting, missing logging, trust boundary violations), persist them
-   using `create_finding`.
-
-5. **Persist design-level findings:**
-   For every issue you identify from deep analysis, call `create_finding` with:
-   - `file_path`: the file where the issue is
-   - `owasp_category`: A01-A10 (use A06 for design issues, A09 for missing logging)
-   - `severity`: critical / high / medium / low
-   - `title`: concise description (e.g., "No rate limiting on login endpoint")
-   - `description`: explain what's wrong and why it matters
-   - `line_number`: if applicable
-   - `suggested_fix`: concrete remediation step
-   - `confidence`: 0.0-1.0 (your confidence this is a real issue)
-
-6. **Generate report:**
-   Call `export_report()` to get the full markdown report.
-
-## Output Format
-
-Present your findings as:
-
-### Summary
-- Total findings (regex + your analysis)
-- Breakdown by severity
-- Top 3 most urgent issues with one-line explanations
-
-### Critical & High Findings
-For each critical/high finding:
-- **[SEVERITY] Title** — `file:line`
-  Description of the vulnerability and its impact.
-  **Fix:** concrete remediation step.
-
-### Design Issues (from deep analysis)
-Issues you found that regex couldn't — missing controls, insecure patterns,
-trust boundary violations. These are often the most important findings.
-
-### Dependency Vulnerabilities
-CVEs found by pip-audit, with upgrade paths.
-
-### Configuration Issues
-Misconfigurations found in settings files.
-
-### Recommendations
-Prioritized next steps: what to fix first and why.
-"""}]
+    return [{"role": "user", "content": SECURITY_AUDIT_TEMPLATE.format(path=path)}]
 
 
 # ── Scanning Tools ─────────────────────────────────────────────────────────
@@ -113,14 +53,17 @@ Prioritized next steps: what to fix first and why.
 
 _VALID_SEVERITIES = {"critical", "high", "medium", "low"}
 _VALID_CATEGORIES = set(OWASP_CATEGORIES.keys())
-_VALID_MODES = {"regex", "llm", "hybrid"}
+_VALID_SCAN_MODES = {"regex", "llm", "hybrid"}
+_VALID_FILE_MODES = {"regex", "deep", "llm", "hybrid"}
 
 
-def _validate_mode(mode: str) -> dict[str, Any] | None:
+def _validate_mode(mode: str, *, allow_deep: bool = False) -> dict[str, Any] | None:
     """Validate scan mode. Returns error dict if invalid, None if OK."""
-    if mode not in _VALID_MODES:
-        return {"error": f"Invalid mode '{mode}'. Must be one of: {', '.join(sorted(_VALID_MODES))}"}
-    if mode != "regex":
+    valid = _VALID_FILE_MODES if allow_deep else _VALID_SCAN_MODES
+    if mode not in valid:
+        hint = " Use scan_file(mode='deep') for design-level analysis." if mode == "deep" else ""
+        return {"error": f"Invalid mode '{mode}'. Must be one of: {', '.join(sorted(valid))}.{hint}"}
+    if mode in ("llm", "hybrid"):
         from owasp_scanner.core import llm_scanner
         if not llm_scanner.is_available():
             return {
@@ -189,7 +132,7 @@ async def scan_directory(
 
         # Detect project type and network surface
         from owasp_scanner.core.nextjs import detect_project_type
-        from owasp_scanner.rules.severity import detect_network_surface
+        from owasp_scanner.core.scanner import detect_network_surface
 
         proj_type = detect_project_type(target) if target.is_dir() else "unknown"
         project_surface = detect_network_surface(target) if target.is_dir() else None
@@ -285,17 +228,16 @@ async def scan_file(
               for LLM reasoning), or 'llm'/'hybrid' (LLM-powered analysis).
     """
     try:
+        mode_err = _validate_mode(mode, allow_deep=True)
+        if mode_err:
+            return mode_err
+
         target = Path(path).resolve()
         if not target.is_file():
             return {"error": f"Not a file: {path}"}
 
         if mode == "deep":
             return await _deep_analyze(target)
-
-        if mode in ("llm", "hybrid"):
-            mode_err = _validate_mode(mode)
-            if mode_err:
-                return mode_err
 
         db = get_db()
         scan = db.create_scan(scope="file", target_path=str(target))

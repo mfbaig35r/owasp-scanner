@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from owasp_scanner.rules.severity import adjust_severity, detect_network_surface
+from owasp_scanner.core.scanner import detect_network_surface
+from owasp_scanner.rules.severity import adjust_severity
 
 
 class TestAdjustSeverity:

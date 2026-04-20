@@ -8,7 +8,6 @@ Local CLI projects (no web/MCP server) get reduced by one level.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 _SEVERITY_ORDER = ["low", "medium", "high", "critical"]
 
@@ -26,53 +25,6 @@ _MIGRATION_PATTERNS = [
     re.compile(r"(?:^|/)migrations?/", re.IGNORECASE),
     re.compile(r"(?:^|/)alembic/", re.IGNORECASE),
 ]
-
-# Imports that indicate a network-facing project
-_NETWORK_IMPORT_PATTERNS = [
-    re.compile(
-        r"^\s*(?:from|import)\s+(?:fastapi|flask|django|aiohttp\.web|tornado\.web|sanic)",
-        re.MULTILINE,
-    ),
-    re.compile(
-        r"^\s*(?:from|import)\s+(?:uvicorn|gunicorn|hypercorn|waitress)",
-        re.MULTILINE,
-    ),
-    re.compile(
-        r"^\s*(?:from|import)\s+(?:fastmcp|mcp\.server)",
-        re.MULTILINE,
-    ),
-    re.compile(
-        r"^\s*(?:from|import)\s+(?:socketserver|http\.server|xmlrpc\.server)",
-        re.MULTILINE,
-    ),
-    re.compile(
-        r"^\s*(?:from|import)\s+(?:starlette)",
-        re.MULTILINE,
-    ),
-]
-
-_SKIP_DIRS = {"__pycache__", ".venv", "venv", "node_modules", ".git", ".tox", ".mypy_cache"}
-
-
-def detect_network_surface(project_root: Path) -> str:
-    """Check if a project has network-facing components.
-
-    Scans Python files for imports of web frameworks, MCP servers, and
-    ASGI/WSGI servers. Returns early on first match.
-
-    Returns 'local' if no network surface detected, 'network' otherwise.
-    """
-    for py_file in project_root.rglob("*.py"):
-        if any(part in _SKIP_DIRS or part.startswith(".") for part in py_file.parts):
-            continue
-        try:
-            content = py_file.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        for pat in _NETWORK_IMPORT_PATTERNS:
-            if pat.search(content):
-                return "network"
-    return "local"
 
 
 def _shift_severity(severity: str, delta: int) -> str:

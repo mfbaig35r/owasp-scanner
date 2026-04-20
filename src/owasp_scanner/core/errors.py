@@ -52,6 +52,10 @@ def log_error(
 
     errors_log = get_settings().errors_log
     with _write_lock:
+        # Rotate if log exceeds 1 MB
+        if errors_log.exists() and errors_log.stat().st_size > 1_000_000:
+            rotated = errors_log.with_suffix(".jsonl.1")
+            errors_log.rename(rotated)
         with open(errors_log, "a", encoding="utf-8") as f:
             f.write(json.dumps(record.to_dict()) + "\n")
 

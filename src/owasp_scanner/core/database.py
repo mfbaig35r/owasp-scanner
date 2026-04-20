@@ -118,7 +118,6 @@ class Finding:
     line_number: int | None = None
     rule_id: str | None = None
     fingerprint: str | None = None
-    category_type: str = "security"
     code_snippet: str | None = None
     suggested_fix: str | None = None
     status: str = "open"
@@ -137,7 +136,6 @@ class Finding:
             "line_number": self.line_number,
             "rule_id": self.rule_id,
             "fingerprint": self.fingerprint,
-            "category_type": self.category_type,
             "owasp_category": self.owasp_category,
             "severity": self.severity,
             "title": self.title,
@@ -152,6 +150,15 @@ class Finding:
             "confidence": self.confidence,
             "notes": self.notes,
         }
+
+
+_FINDING_FIELDS = set(Finding.__dataclass_fields__.keys())
+
+
+def _finding_from_row(row: Any) -> Finding:
+    """Create Finding from a DB row, ignoring columns no longer in the dataclass."""
+    d = dict(row)
+    return Finding(**{k: v for k, v in d.items() if k in _FINDING_FIELDS})
 
 
 @dataclass
@@ -315,7 +322,6 @@ class Database:
         scan_id: str | None = None,
         line_number: int | None = None,
         rule_id: str | None = None,
-        category_type: str = "security",
         code_snippet: str | None = None,
         suggested_fix: str | None = None,
         confidence: float | None = None,
@@ -337,7 +343,7 @@ class Database:
                     "SELECT * FROM findings WHERE fingerprint = ?", (fingerprint,)
                 ).fetchone()
                 if row:
-                    existing = Finding(**dict(row))
+                    existing = _finding_from_row(row)
                     # Update scan linkage and timestamp for open findings
                     if existing.status in ("open", "in_progress"):
                         conn.execute(
@@ -356,7 +362,6 @@ class Database:
                 line_number=line_number,
                 rule_id=rule_id,
                 fingerprint=fingerprint,
-                category_type=category_type,
                 owasp_category=owasp_category,
                 severity=severity,
                 title=title,
@@ -370,12 +375,12 @@ class Database:
             conn.execute(
                 """INSERT INTO findings
                    (id, scan_id, file_path, line_number, rule_id, fingerprint,
-                    category_type, owasp_category, severity, title, description,
+                    owasp_category, severity, title, description,
                     code_snippet, suggested_fix, confidence, status, found_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     finding.id, finding.scan_id, finding.file_path, finding.line_number,
-                    finding.rule_id, finding.fingerprint, finding.category_type,
+                    finding.rule_id, finding.fingerprint,
                     finding.owasp_category, finding.severity, finding.title, finding.description,
                     finding.code_snippet, finding.suggested_fix, finding.confidence, finding.status,
                     finding.found_at, finding.updated_at,
@@ -392,7 +397,7 @@ class Database:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM findings WHERE id = ?", (finding_id,)).fetchone()
             if row:
-                return Finding(**dict(row))
+                return _finding_from_row(row)
         return None
 
     def list_findings(
@@ -401,7 +406,6 @@ class Database:
         status: str | None = None,
         severity: str | None = None,
         owasp_category: str | None = None,
-        category_type: str | None = None,
         file_path: str | None = None,
         scan_id: str | None = None,
         limit: int = 100,
@@ -421,9 +425,6 @@ class Database:
         if file_path:
             clauses.append("file_path LIKE ?")
             params.append(f"%{file_path}%")
-        if category_type:
-            clauses.append("category_type = ?")
-            params.append(category_type)
         if scan_id:
             clauses.append("scan_id = ?")
             params.append(scan_id)
@@ -436,7 +437,7 @@ class Database:
                 f"SELECT * FROM findings {where} ORDER BY found_at DESC LIMIT ?",
                 params,
             ).fetchall()
-            return [Finding(**dict(r)) for r in rows]
+            return [_finding_from_row(r) for r in rows]
 
     def update_finding(
         self,
