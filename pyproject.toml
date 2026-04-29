@@ -4,6 +4,7 @@ dynamic = ["version"]
 description = "MCP server for OWASP Top 10 (2025) security scanning of Python and Next.js codebases"
 readme = "README.md"
 license = "MIT"
+authors = [{name = "Fahad Baig"}]
 requires-python = ">=3.11"
 keywords = ["owasp", "security", "scanner", "mcp", "vulnerability", "nextjs", "sast"]
 classifiers = [
