@@ -27,7 +27,7 @@ owasp-scanner = "owasp_scanner.server:main"
 [project.optional-dependencies]
 llm = ["openai~=1.60"]
 plugins = ["pyyaml~=6.0"]
-dev = ["pytest~=8.0", "pytest-asyncio~=0.24", "pyyaml~=6.0", "openai~=1.60"]
+dev = ["pytest~=8.0", "pytest-asyncio~=0.24", "pyyaml~=6.0", "openai~=1.60", "ruff~=0.8"]
 
 [project.urls]
 Repository = "https://github.com/mfbaig35r/owasp-scanner"
