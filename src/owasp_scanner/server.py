@@ -818,19 +818,33 @@ async def delete_finding(finding_id: str) -> dict[str, Any]:
 # ── LLM Tools ──────────────────────────────────────────────────────────────
 
 
+_TRIAGE_OVERALL_CEILING_S = 600.0
+
+
 @mcp.tool()
 async def llm_triage(
     finding_ids: list[str],
     auto_update: bool = False,
+    max_concurrency: int = 5,
+    per_call_timeout: float = 30.0,
 ) -> dict[str, Any]:
     """Send findings to the LLM for triage — identifies true/false positives.
+
+    Each finding is triaged in its own LLM call; up to `max_concurrency` calls
+    run in parallel. A failed or timed-out call yields a `needs_investigation`
+    verdict for that finding rather than aborting the batch.
 
     Args:
         finding_ids: List of finding UUIDs to triage.
         auto_update: If True, auto-mark high-confidence false positives and add
                      reasoning to notes. If False, return recommendations only.
+        max_concurrency: Max LLM calls in flight at once (default 5).
+        per_call_timeout: Seconds before a single triage call is abandoned
+                          (default 30).
     """
     try:
+        import asyncio
+
         from owasp_scanner.core import llm_scanner
 
         if not llm_scanner.is_available():
@@ -870,7 +884,28 @@ async def llm_triage(
         if not findings_context:
             return {"error": "No valid findings found for the provided IDs."}
 
-        results, usage = llm_scanner.triage_findings(findings_context)
+        # Hard ceiling on the whole tool body so the MCP transport never
+        # waits longer than ~10 minutes even if every call hits its timeout.
+        overall_ceiling = min(
+            per_call_timeout * len(findings_context) + 5.0,
+            _TRIAGE_OVERALL_CEILING_S,
+        )
+        try:
+            results, usage = await asyncio.wait_for(
+                llm_scanner.triage_findings(
+                    findings_context,
+                    max_concurrency=max_concurrency,
+                    per_call_timeout=per_call_timeout,
+                ),
+                timeout=overall_ceiling,
+            )
+        except TimeoutError:
+            return {
+                "error": (
+                    f"llm_triage exceeded overall ceiling of {overall_ceiling:.0f}s. "
+                    f"Try a smaller batch or raise per_call_timeout."
+                ),
+            }
 
         # Auto-update if requested
         updated = []

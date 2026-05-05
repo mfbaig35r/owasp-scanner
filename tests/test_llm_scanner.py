@@ -175,10 +175,21 @@ class TestScanFileLLM:
 # ── Triage ─────────────────────────────────────────────────────────────────
 
 
+def _finding(fid: str, title: str = "eval() usage") -> dict:
+    return {
+        "id": fid,
+        "title": title,
+        "description": "D",
+        "file_path": "/test.py",
+        "line_number": 5,
+        "code_context": "# test\neval(x)",
+    }
+
+
 class TestTriage:
     @patch("owasp_scanner.core.llm_scanner._get_client")
     @patch("owasp_scanner.core.llm_scanner._get_model", return_value="gpt-5.4-nano")
-    def test_triage_findings(self, mock_model, mock_client):
+    async def test_triage_findings_single(self, mock_model, mock_client):
         from owasp_scanner.core.llm_scanner import triage_findings
 
         mock_client.return_value.chat.completions.create.return_value = (
@@ -190,17 +201,101 @@ class TestTriage:
             }])
         )
 
-        results, usage = triage_findings([{
-            "id": "abc-123",
-            "title": "eval() usage",
-            "description": "D",
-            "file_path": "/test.py",
-            "line_number": 5,
-            "code_context": "# test\neval(x)",
-        }])
+        results, usage = await triage_findings([_finding("abc-123")])
         assert len(results) == 1
         assert results[0].verdict == "false_positive"
         assert results[0].confidence == 0.9
+        assert usage.input_tokens == 300
+        assert usage.output_tokens == 150
+
+    @patch("owasp_scanner.core.llm_scanner._get_client")
+    @patch("owasp_scanner.core.llm_scanner._get_model", return_value="gpt-5.4-nano")
+    async def test_triage_findings_per_finding_calls(self, mock_model, mock_client):
+        """Each finding triggers its own OpenAI call (not a single batched one)."""
+        from owasp_scanner.core.llm_scanner import triage_findings
+
+        # Side effect returns a verdict echoing the finding_id from the prompt.
+        # Since each call is independent, we just return a fixed verdict per call.
+        completions = [
+            _mock_triage_completion([{
+                "finding_id": fid,
+                "verdict": "true_positive",
+                "confidence": 0.7,
+                "reasoning": "r",
+            }])
+            for fid in ("a", "b", "c")
+        ]
+        mock_client.return_value.chat.completions.create.side_effect = completions
+
+        results, usage = await triage_findings(
+            [_finding("a"), _finding("b"), _finding("c")],
+            max_concurrency=2,
+        )
+        assert len(results) == 3
+        assert {r.finding_id for r in results} == {"a", "b", "c"}
+        # One call per finding
+        assert mock_client.return_value.chat.completions.create.call_count == 3
+        # Usage is aggregated across calls
+        assert usage.input_tokens == 300 * 3
+        assert usage.output_tokens == 150 * 3
+
+    @patch("owasp_scanner.core.llm_scanner._get_client")
+    @patch("owasp_scanner.core.llm_scanner._get_model", return_value="gpt-5.4-nano")
+    async def test_triage_findings_one_failure_does_not_abort(self, mock_model, mock_client):
+        """A single failing call yields needs_investigation; others succeed."""
+        from owasp_scanner.core.llm_scanner import triage_findings
+
+        good = _mock_triage_completion([{
+            "finding_id": "good",
+            "verdict": "true_positive",
+            "confidence": 0.8,
+            "reasoning": "r",
+        }])
+        mock_client.return_value.chat.completions.create.side_effect = [
+            good,
+            RuntimeError("transient API error"),
+            good,
+        ]
+
+        results, _ = await triage_findings(
+            [_finding("good"), _finding("bad"), _finding("good")],
+            max_concurrency=1,  # serialize so side_effect order is deterministic
+        )
+        assert len(results) == 3
+        assert results[0].verdict == "true_positive"
+        assert results[1].verdict == "needs_investigation"
+        assert "transient API error" in results[1].reasoning
+        assert results[2].verdict == "true_positive"
+
+    @patch("owasp_scanner.core.llm_scanner._get_client")
+    @patch("owasp_scanner.core.llm_scanner._get_model", return_value="gpt-5.4-nano")
+    async def test_triage_findings_per_call_timeout(self, mock_model, mock_client):
+        """A call exceeding per_call_timeout yields needs_investigation."""
+        import time
+
+        from owasp_scanner.core.llm_scanner import triage_findings
+
+        def slow(*args, **kwargs):
+            time.sleep(0.5)
+            return _mock_triage_completion([])
+
+        mock_client.return_value.chat.completions.create.side_effect = slow
+
+        results, _ = await triage_findings(
+            [_finding("slow")],
+            per_call_timeout=0.05,
+        )
+        assert len(results) == 1
+        assert results[0].verdict == "needs_investigation"
+        assert "timed out" in results[0].reasoning.lower()
+
+    async def test_triage_findings_empty_input(self):
+        from owasp_scanner.core.llm_scanner import triage_findings
+
+        results, usage = await triage_findings([])
+        assert results == []
+        assert usage.input_tokens == 0
+        assert usage.output_tokens == 0
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────

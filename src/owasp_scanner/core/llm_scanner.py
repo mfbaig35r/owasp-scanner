@@ -7,7 +7,9 @@ base_url override.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -29,6 +31,8 @@ try:
     _HAS_OPENAI = True
 except ImportError:
     _HAS_OPENAI = False
+
+logger = logging.getLogger(__name__)
 
 
 # ── Data structures ────────────────────────────────────────────────────────
@@ -235,29 +239,27 @@ def _parse_scan_response(response: Any, file_path: str) -> list[LLMFinding]:
 # ── Triage ─────────────────────────────────────────────────────────────────
 
 
-def triage_findings(
-    findings_with_context: list[dict[str, Any]],
-) -> tuple[list[TriageResult], LLMUsage]:
-    """Triage regex findings using the LLM.
+DEFAULT_TRIAGE_MAX_CONCURRENCY = 5
+DEFAULT_TRIAGE_PER_CALL_TIMEOUT = 30.0
 
-    Args:
-        findings_with_context: List of dicts with 'id', 'title', 'description',
-            'code_context' (expanded snippet), 'file_path', 'line_number'.
 
-    Returns (triage results, usage).
+def _triage_one_sync(
+    client: Any,
+    model: str,
+    finding: dict[str, Any],
+) -> tuple[TriageResult | None, LLMUsage]:
+    """Triage a single finding via one OpenAI call. Synchronous; intended to be
+    invoked from `asyncio.to_thread` so calls run in parallel.
     """
-    client = _get_client()
-    model = _get_model()
-
-    user_content = "Triage these security findings:\n\n"
-    for f in findings_with_context:
-        user_content += (
-            f"Finding ID: {f['id']}\n"
-            f"Title: {f['title']}\n"
-            f"Description: {f['description']}\n"
-            f"File: {f['file_path']}:{f.get('line_number', '?')}\n"
-            f"Code context:\n```\n{f.get('code_context', f.get('code_snippet', ''))}\n```\n\n"
-        )
+    user_content = (
+        "Triage this security finding:\n\n"
+        f"Finding ID: {finding['id']}\n"
+        f"Title: {finding['title']}\n"
+        f"Description: {finding['description']}\n"
+        f"File: {finding['file_path']}:{finding.get('line_number', '?')}\n"
+        f"Code context:\n```\n"
+        f"{finding.get('code_context', finding.get('code_snippet', ''))}\n```\n"
+    )
 
     response = client.chat.completions.create(
         model=model,
@@ -271,8 +273,109 @@ def triage_findings(
     )
 
     usage = _extract_usage(response)
-    results = _parse_triage_response(response)
-    return results, usage
+    parsed = _parse_triage_response(response)
+    # Single-finding prompt — pick the assessment matching this finding,
+    # falling back to the first if the model didn't echo the id.
+    chosen: TriageResult | None = None
+    if parsed:
+        chosen = next(
+            (r for r in parsed if r.finding_id == finding["id"]),
+            parsed[0],
+        )
+        # Ensure the returned result is keyed to the requested finding id
+        # so callers can rely on it for auto-update lookups.
+        if chosen.finding_id != finding["id"]:
+            chosen.finding_id = finding["id"]
+    return chosen, usage
+
+
+async def triage_findings(
+    findings_with_context: list[dict[str, Any]],
+    *,
+    max_concurrency: int = DEFAULT_TRIAGE_MAX_CONCURRENCY,
+    per_call_timeout: float = DEFAULT_TRIAGE_PER_CALL_TIMEOUT,
+) -> tuple[list[TriageResult], LLMUsage]:
+    """Triage regex findings using the LLM, one call per finding in parallel.
+
+    Args:
+        findings_with_context: List of dicts with 'id', 'title', 'description',
+            'code_context' (expanded snippet), 'file_path', 'line_number'.
+        max_concurrency: Max in-flight LLM calls. Defaults to 5; raise for
+            higher-tier API keys.
+        per_call_timeout: Seconds before a single triage call is abandoned.
+            Failed/timed-out findings get a `needs_investigation` verdict
+            with the failure reason in `reasoning`.
+
+    Returns (triage results, aggregated usage). Order of results matches
+    input order. The per-call design replaces an earlier batched single-prompt
+    implementation that could hang the MCP transport on large batches.
+    """
+    if not findings_with_context:
+        return [], LLMUsage(input_tokens=0, output_tokens=0, model=_get_model())
+
+    client = _get_client()
+    model = _get_model()
+    sem = asyncio.Semaphore(max(1, max_concurrency))
+    total = len(findings_with_context)
+    done = 0
+    done_lock = asyncio.Lock()
+
+    async def triage_one(
+        index: int, finding: dict[str, Any]
+    ) -> tuple[int, TriageResult, LLMUsage | None]:
+        nonlocal done
+        result: TriageResult
+        usage: LLMUsage | None = None
+        async with sem:
+            try:
+                triage, usage = await asyncio.wait_for(
+                    asyncio.to_thread(_triage_one_sync, client, model, finding),
+                    timeout=per_call_timeout,
+                )
+                if triage is None:
+                    result = TriageResult(
+                        finding_id=finding["id"],
+                        verdict="needs_investigation",
+                        confidence=0.0,
+                        reasoning="LLM returned no assessment for this finding.",
+                    )
+                else:
+                    result = triage
+            except TimeoutError:
+                logger.warning(
+                    "triage timeout for finding %s after %.1fs",
+                    finding.get("id"),
+                    per_call_timeout,
+                )
+                result = TriageResult(
+                    finding_id=finding["id"],
+                    verdict="needs_investigation",
+                    confidence=0.0,
+                    reasoning=f"Triage timed out after {per_call_timeout:.0f}s.",
+                )
+            except Exception as exc:  # pragma: no cover — logged + recorded
+                logger.warning("triage failed for finding %s: %s", finding.get("id"), exc)
+                result = TriageResult(
+                    finding_id=finding["id"],
+                    verdict="needs_investigation",
+                    confidence=0.0,
+                    reasoning=f"Triage call failed: {exc}",
+                )
+
+        async with done_lock:
+            done += 1
+            logger.info("triaged %d/%d", done, total)
+        return index, result, usage
+
+    tasks = [triage_one(i, f) for i, f in enumerate(findings_with_context)]
+    completed = await asyncio.gather(*tasks)
+    completed.sort(key=lambda t: t[0])
+
+    results: list[TriageResult] = [t[1] for t in completed]
+    total_in = sum(u.input_tokens for _, _, u in completed if u is not None)
+    total_out = sum(u.output_tokens for _, _, u in completed if u is not None)
+    aggregated = LLMUsage(input_tokens=total_in, output_tokens=total_out, model=model)
+    return results, aggregated
 
 
 def _parse_triage_response(response: Any) -> list[TriageResult]:
