@@ -5,7 +5,7 @@ Security audit workbench that scans Python and Next.js codebases against the OWA
 ## Quick Reference
 
 ```bash
-uv run python -m pytest tests/ -v --tb=short   # run tests (370 passing)
+uv run python -m pytest tests/ -v --tb=short   # run tests (421 passing)
 uv run ruff check src/ tests/                   # lint
 uv run owasp-scanner                            # start MCP server
 uv run owasp-scanner --scan /path --fail-on=high  # CLI mode
@@ -41,17 +41,18 @@ src/owasp_scanner/
 ## Tools (20)
 
 ### Scanning
-- `scan_directory(path, mode, exclude, git_diff_base)` — main entry point. `git_diff_base` scans only changed files (replaces old scan_changes/scan_pr)
+- `scan_directory(path, mode, exclude, git_diff_base, context_file, compact)` — main entry point. `git_diff_base` scans only changed files (replaces old scan_changes/scan_pr). `context_file` (or auto-discovered `.owasp-context.md`) prepends project invariants to LLM prompts. `compact=True` omits the inline findings list.
 - `scan_file(path, mode)` — single file. `mode`: `regex` (default), `deep` (design-level checklist), `llm`, `hybrid`
 - `scan_config(path, framework)` — framework config analysis
 - `scan_dependencies(path)` — pip-audit for known CVEs (A03)
 - `scan_boundary(path)` — Next.js Server→Client prop analysis (data leak detection)
 
 ### Findings
-- `list_findings`, `get_finding`, `create_finding`, `update_finding`, `delete_finding`, `verify_fix`
+- `list_findings(..., compact)` — `compact=True` drops description/code_snippet/suggested_fix/notes
+- `get_finding`, `create_finding`, `update_finding`, `delete_finding`, `verify_fix`
 
 ### LLM
-- `llm_triage(finding_ids, auto_update)` — batch LLM triage of regex findings
+- `llm_triage(finding_ids, auto_update, max_concurrency, per_call_timeout, context_file)` — per-finding parallel triage. Defaults: `max_concurrency=5`, `per_call_timeout=30s`, overall ceiling `min(per_call * N + 5s, 600s)`. Failed/timed-out findings get a `needs_investigation` verdict (batch continues). `context_file` (or auto-discovered `.owasp-context.md` from common ancestor of finding paths) prepends project invariants.
 
 ### Reporting
 - `get_summary`, `export_report`, `export_sarif`, `get_trends`
@@ -68,6 +69,8 @@ src/owasp_scanner/
 - **LLM is optional**: guarded with `try: import openai` / `_HAS_OPENAI`. Scanner works without it.
 - **All tools are in server.py** (single file pattern)
 - **File-type context**: Both Python and Next.js files get Type/Trust/Risk headers when sent to the LLM
+- **Project context (`.owasp-context.md`)**: optional reviewer-supplied markdown describing auth model, tenant isolation, intentional design decisions. Auto-discovered in scan target dir; for `llm_triage` discovered by walking up from the common ancestor of the findings being triaged. Capped at 20 KB. Prepended to every LLM scan + triage prompt as authoritative context — suppresses architectural FPs in defense-in-depth codebases.
+- **Triage parallelism**: `triage_findings` is async; one OpenAI call per finding via `asyncio.to_thread` under `asyncio.Semaphore(max_concurrency)`. Per-call `wait_for(per_call_timeout)`; per-finding failures yield `needs_investigation` rather than aborting. The MCP tool wraps the whole call in an overall ceiling so the transport never sees a >10-min hang.
 
 ## Scanning Modes
 
@@ -114,7 +117,7 @@ Cross-file structural analysis (call graphs, data flow) is handled by the codegr
 ## Known Limitations
 
 - **Regex rules are syntax-only**: can't understand context (test file vs API handler). Use `hybrid` mode or context-sensitive severity in `rules/severity.py`.
-- **Single-threaded LLM scanning**: files processed sequentially to avoid rate limits.
+- **LLM file scanning is sequential**: `scan_file_llm` processes files one at a time to avoid rate limits. Triage (`triage_findings`) runs in parallel — see Key Patterns.
 - **scan_boundary is regex-based**: catches explicit `<Component prop={value} />` patterns but not spread props (`{...user}`) or indirect passing. The LLM catches these.
 
 ## Testing
