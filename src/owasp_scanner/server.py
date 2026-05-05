@@ -7,6 +7,7 @@ tracks findings, and persists everything to a local SQLite database.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -73,6 +74,68 @@ def _validate_mode(mode: str, *, allow_deep: bool = False) -> dict[str, Any] | N
     return None
 
 
+_CONTEXT_FILE_NAME = ".owasp-context.md"
+_CONTEXT_MAX_BYTES = 20_000  # ~5k tokens; oversize files probably aren't context
+
+
+def _load_project_context(
+    target: Path | None, explicit: str | None,
+) -> tuple[str | None, str | None]:
+    """Resolve the project-context string for an LLM scan or triage call.
+
+    Resolution order:
+    1. `explicit` path (relative paths are resolved against `target` if it's
+       a directory, otherwise against cwd). If set but missing, returns
+       (None, error_message) so the caller can surface it.
+    2. Auto-discover `.owasp-context.md` in `target` (if `target` is a dir).
+    3. (None, None) — no context.
+
+    Returns (context_string_or_none, error_message_or_none).
+    """
+    if explicit:
+        explicit_path = Path(explicit)
+        if not explicit_path.is_absolute() and target is not None and target.is_dir():
+            explicit_path = (target / explicit_path).resolve()
+        else:
+            explicit_path = explicit_path.expanduser().resolve()
+        if not explicit_path.is_file():
+            return None, f"context_file does not exist: {explicit_path}"
+        return _read_context(explicit_path), None
+
+    if target is not None and target.is_dir():
+        auto = target / _CONTEXT_FILE_NAME
+        if auto.is_file():
+            return _read_context(auto), None
+
+    return None, None
+
+
+def _read_context(path: Path) -> str | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    if not text.strip():
+        return None
+    if len(text.encode("utf-8")) > _CONTEXT_MAX_BYTES:
+        text = text[:_CONTEXT_MAX_BYTES] + "\n\n[truncated — context file exceeded size cap]"
+    return text
+
+
+def _find_context_anchor(start: Path) -> Path | None:
+    """Walk up from `start` looking for a directory containing the context file.
+
+    Used by `llm_triage` so a context file at the project root is discovered
+    even when the findings being triaged all live deeper in the tree. Returns
+    the first directory containing `.owasp-context.md`, or None.
+    """
+    current = start.resolve()
+    for candidate in (current, *current.parents):
+        if (candidate / _CONTEXT_FILE_NAME).is_file():
+            return candidate
+    return None
+
+
 @mcp.tool()
 async def scan_directory(
     path: str,
@@ -81,6 +144,7 @@ async def scan_directory(
     exclude: list[str] | None = None,
     mode: str = "regex",
     git_diff_base: str | None = None,
+    context_file: str | None = None,
 ) -> dict[str, Any]:
     """Scan a directory recursively for OWASP Top 10 security issues.
 
@@ -93,6 +157,11 @@ async def scan_directory(
         mode: Scanning mode — 'regex' (free, fast), 'llm' (smart, uses API), or 'hybrid' (regex + LLM triage).
         git_diff_base: If set, only scan files changed between this branch and HEAD (e.g. 'main').
                        Useful for pre-PR security checks — only scans what you're about to ship.
+        context_file: Path to a markdown file describing project-level invariants
+                      (auth model, tenant isolation, intentional design decisions)
+                      that the LLM should treat as authoritative when reasoning.
+                      Auto-discovered as `.owasp-context.md` in the target
+                      directory if not provided. Only consulted in LLM modes.
     """
     try:
         mode_err = _validate_mode(mode)
@@ -137,6 +206,20 @@ async def scan_directory(
         proj_type = detect_project_type(target) if target.is_dir() else "unknown"
         project_surface = detect_network_surface(target) if target.is_dir() else None
 
+        # Load reviewer-supplied project context (only relevant in LLM modes)
+        project_context: str | None = None
+        context_source: str | None = None
+        if mode in ("llm", "hybrid"):
+            project_context, ctx_err = _load_project_context(target, context_file)
+            if ctx_err:
+                return {"error": ctx_err}
+            if project_context is not None:
+                context_source = (
+                    context_file
+                    if context_file
+                    else str(target / _CONTEXT_FILE_NAME)
+                )
+
         db = get_db()
         scope = "repo" if git_diff_base else ("directory" if target.is_dir() else "file")
         categories_json = json.dumps([owasp_category]) if owasp_category else None
@@ -164,6 +247,7 @@ async def scan_directory(
                 exclude=all_excludes or None,
                 project_type=proj_type,
                 project_surface=project_surface,
+                project_context=project_context,
             )
 
         db.complete_scan(scan.id, findings_count=len(result.findings))
@@ -205,6 +289,9 @@ async def scan_directory(
             response["git_diff_base"] = git_diff_base
             response["changed_files"] = len(changed_files) if changed_files else 0
             response["files_scanned"] = [str(f) for f in changed_files] if changed_files else []
+
+        if context_source:
+            response["project_context_source"] = context_source
 
         return response
     except Exception as exc:
@@ -827,6 +914,7 @@ async def llm_triage(
     auto_update: bool = False,
     max_concurrency: int = 5,
     per_call_timeout: float = 30.0,
+    context_file: str | None = None,
 ) -> dict[str, Any]:
     """Send findings to the LLM for triage — identifies true/false positives.
 
@@ -841,6 +929,10 @@ async def llm_triage(
         max_concurrency: Max LLM calls in flight at once (default 5).
         per_call_timeout: Seconds before a single triage call is abandoned
                           (default 30).
+        context_file: Optional path to a markdown file with project-level
+                      invariants to prepend to every triage prompt. If not
+                      provided, auto-discovers `.owasp-context.md` in the
+                      common ancestor directory of the findings being triaged.
     """
     try:
         import asyncio
@@ -854,10 +946,12 @@ async def llm_triage(
 
         db = get_db()
         findings_context = []
+        finding_paths: list[str] = []
         for fid in finding_ids:
             finding = db.get_finding(fid)
             if not finding:
                 continue
+            finding_paths.append(finding.file_path)
 
             # Expand code context
             try:
@@ -884,6 +978,24 @@ async def llm_triage(
         if not findings_context:
             return {"error": "No valid findings found for the provided IDs."}
 
+        # Resolve project context: explicit context_file wins; otherwise walk
+        # up from the common ancestor of finding paths looking for
+        # .owasp-context.md (a single project root may sit above the dir tree
+        # that actually contains the findings).
+        anchor: Path | None = None
+        if finding_paths and not context_file:
+            try:
+                common = os.path.commonpath(finding_paths)
+                start = Path(common)
+                if start.is_file():
+                    start = start.parent
+                anchor = _find_context_anchor(start)
+            except ValueError:
+                anchor = None
+        project_context, ctx_err = _load_project_context(anchor, context_file)
+        if ctx_err:
+            return {"error": ctx_err}
+
         # Hard ceiling on the whole tool body so the MCP transport never
         # waits longer than ~10 minutes even if every call hits its timeout.
         overall_ceiling = min(
@@ -896,6 +1008,7 @@ async def llm_triage(
                     findings_context,
                     max_concurrency=max_concurrency,
                     per_call_timeout=per_call_timeout,
+                    project_context=project_context,
                 ),
                 timeout=overall_ceiling,
             )
@@ -919,11 +1032,17 @@ async def llm_triage(
                     )
                     updated.append(tr.finding_id)
 
-        return {
+        response: dict[str, Any] = {
             "triage_results": [r.to_dict() for r in results],
             "auto_updated": updated,
             "llm_usage": usage.to_dict(),
         }
+        if project_context is not None:
+            if context_file:
+                response["project_context_source"] = context_file
+            elif anchor is not None:
+                response["project_context_source"] = str(anchor / _CONTEXT_FILE_NAME)
+        return response
     except Exception as exc:
         error_id = errors.log_error("llm_triage", exc)
         return {"error": str(exc), "error_id": error_id}

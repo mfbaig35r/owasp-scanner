@@ -80,10 +80,27 @@ Rules:
 """
 
 
+PROJECT_CONTEXT_HEADER = (
+    "# Project context (authoritative — apply when reasoning about this file)\n"
+    "The reviewer-supplied context below describes architectural invariants "
+    "(auth model, tenant isolation, trust boundaries, intentional design "
+    "decisions). Treat it as authoritative unless this specific file clearly "
+    "contradicts it. Suppress findings the context already explains.\n"
+)
+
+
+def _wrap_project_context(project_context: str | None) -> str:
+    """Return a prompt-ready project-context block, or empty string."""
+    if not project_context or not project_context.strip():
+        return ""
+    return f"{PROJECT_CONTEXT_HEADER}\n{project_context.strip()}\n\n"
+
+
 def build_nextjs_file_context(
     file_path: str,
     file_type: str,
     content: str,
+    project_context: str | None = None,
 ) -> str:
     """Build LLM user message with file-type context for Next.js files."""
     from owasp_scanner.core.nextjs import FILE_TYPE_CONTEXT
@@ -94,6 +111,7 @@ def build_nextjs_file_context(
     risk = ctx.get("risk", "")
 
     return (
+        f"{_wrap_project_context(project_context)}"
         f"File: {file_path}\n"
         f"Type: {label}\n"
         f"Trust: {trust}\n"
@@ -222,6 +240,7 @@ def build_python_file_context(
     file_path: str,
     content: str,
     file_type: str | None = None,
+    project_context: str | None = None,
 ) -> str:
     """Build LLM user message with file-type context for Python files."""
     if file_type is None:
@@ -233,6 +252,7 @@ def build_python_file_context(
     risk = ctx["risk"]
 
     return (
+        f"{_wrap_project_context(project_context)}"
         f"File: {file_path}\n"
         f"Type: {label}\n"
         f"Trust: {trust}\n"

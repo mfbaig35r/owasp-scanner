@@ -160,6 +160,7 @@ def scan_file_llm(
     file_path: str,
     project_type: str = "python",
     file_type: str | None = None,
+    project_context: str | None = None,
 ) -> tuple[list[LLMFinding], LLMUsage]:
     """Scan a file for security issues using the LLM.
 
@@ -168,6 +169,10 @@ def scan_file_llm(
         file_path: Path to the file (for context).
         project_type: 'python', 'nextjs', or 'react' — selects system prompt.
         file_type: Next.js file type for context block (server_component, etc).
+        project_context: Reviewer-supplied project context (auth model, trust
+            boundaries, intentional design decisions). Prepended to the user
+            message. Use to suppress false positives that need cross-module
+            knowledge the LLM can't infer from a single file.
 
     Returns (findings, usage).
     """
@@ -183,9 +188,13 @@ def scan_file_llm(
 
     # Build user message with framework context
     if project_type in ("nextjs", "react") and file_type:
-        user_content = build_nextjs_file_context(file_path, file_type, content)
+        user_content = build_nextjs_file_context(
+            file_path, file_type, content, project_context=project_context,
+        )
     else:
-        user_content = build_python_file_context(file_path, content)
+        user_content = build_python_file_context(
+            file_path, content, project_context=project_context,
+        )
 
     # Truncate very large files
     if len(content) > 150_000:
@@ -247,11 +256,15 @@ def _triage_one_sync(
     client: Any,
     model: str,
     finding: dict[str, Any],
+    project_context: str | None = None,
 ) -> tuple[TriageResult | None, LLMUsage]:
     """Triage a single finding via one OpenAI call. Synchronous; intended to be
     invoked from `asyncio.to_thread` so calls run in parallel.
     """
+    from owasp_scanner.core.prompts import _wrap_project_context
+
     user_content = (
+        f"{_wrap_project_context(project_context)}"
         "Triage this security finding:\n\n"
         f"Finding ID: {finding['id']}\n"
         f"Title: {finding['title']}\n"
@@ -294,6 +307,7 @@ async def triage_findings(
     *,
     max_concurrency: int = DEFAULT_TRIAGE_MAX_CONCURRENCY,
     per_call_timeout: float = DEFAULT_TRIAGE_PER_CALL_TIMEOUT,
+    project_context: str | None = None,
 ) -> tuple[list[TriageResult], LLMUsage]:
     """Triage regex findings using the LLM, one call per finding in parallel.
 
@@ -305,6 +319,8 @@ async def triage_findings(
         per_call_timeout: Seconds before a single triage call is abandoned.
             Failed/timed-out findings get a `needs_investigation` verdict
             with the failure reason in `reasoning`.
+        project_context: Reviewer-supplied project context prepended to every
+            triage prompt. Same semantics as scan_file_llm's project_context.
 
     Returns (triage results, aggregated usage). Order of results matches
     input order. The per-call design replaces an earlier batched single-prompt
@@ -329,7 +345,9 @@ async def triage_findings(
         async with sem:
             try:
                 triage, usage = await asyncio.wait_for(
-                    asyncio.to_thread(_triage_one_sync, client, model, finding),
+                    asyncio.to_thread(
+                        _triage_one_sync, client, model, finding, project_context,
+                    ),
                     timeout=per_call_timeout,
                 )
                 if triage is None:

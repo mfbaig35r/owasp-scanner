@@ -363,6 +363,7 @@ async def scan_path_hybrid(
     exclude: list[str] | None = None,
     project_type: str | None = None,
     project_surface: str | None = None,
+    project_context: str | None = None,
 ) -> ScanResult:
     """Scan with regex, LLM, or hybrid mode.
 
@@ -427,7 +428,9 @@ async def scan_path_hybrid(
                     "code_context": context,
                 })
 
-            triage_results, _ = triage_findings(triage_context)
+            triage_results, _ = await triage_findings(
+                triage_context, project_context=project_context,
+            )
             for tr in triage_results:
                 if tr.verdict == "false_positive" and tr.confidence > 0.8:
                     db.update_finding(
@@ -461,6 +464,7 @@ async def scan_path_hybrid(
             content, str(file_path),
             project_type=project_type or "python",
             file_type=file_type,
+            project_context=project_context,
         )
 
         for lf in llm_findings:

@@ -297,6 +297,100 @@ class TestTriage:
         assert usage.input_tokens == 0
         assert usage.output_tokens == 0
 
+    @patch("owasp_scanner.core.llm_scanner._get_client")
+    @patch("owasp_scanner.core.llm_scanner._get_model", return_value="gpt-5.4-nano")
+    async def test_triage_findings_passes_project_context(self, mock_model, mock_client):
+        from owasp_scanner.core.llm_scanner import triage_findings
+
+        mock_client.return_value.chat.completions.create.return_value = (
+            _mock_triage_completion([{
+                "finding_id": "x",
+                "verdict": "false_positive",
+                "confidence": 0.9,
+                "reasoning": "context says so",
+            }])
+        )
+
+        ctx = "Auth model: every API route gates with `tenant_id` BEFORE helpers."
+        await triage_findings([_finding("x")], project_context=ctx)
+
+        call = mock_client.return_value.chat.completions.create.call_args
+        user_msg = call.kwargs["messages"][1]["content"]
+        assert "Project context" in user_msg
+        assert ctx in user_msg
+
+    @patch("owasp_scanner.core.llm_scanner._get_client")
+    @patch("owasp_scanner.core.llm_scanner._get_model", return_value="gpt-5.4-nano")
+    async def test_triage_findings_no_context_no_header(self, mock_model, mock_client):
+        from owasp_scanner.core.llm_scanner import triage_findings
+
+        mock_client.return_value.chat.completions.create.return_value = (
+            _mock_triage_completion([{
+                "finding_id": "x",
+                "verdict": "true_positive",
+                "confidence": 0.8,
+                "reasoning": "r",
+            }])
+        )
+
+        await triage_findings([_finding("x")])
+        user_msg = mock_client.return_value.chat.completions.create.call_args.kwargs[
+            "messages"
+        ][1]["content"]
+        assert "Project context" not in user_msg
+
+
+class TestProjectContextPrompt:
+    def test_python_builder_no_context(self):
+        from owasp_scanner.core.prompts import build_python_file_context
+
+        msg = build_python_file_context("/app.py", "x = 1")
+        assert "Project context" not in msg
+
+    def test_python_builder_with_context(self):
+        from owasp_scanner.core.prompts import build_python_file_context
+
+        msg = build_python_file_context(
+            "/app.py", "x = 1", project_context="Tenant gate is at API layer.",
+        )
+        assert "Project context" in msg
+        assert "Tenant gate is at API layer." in msg
+        # Context should appear before the file content
+        assert msg.index("Tenant gate") < msg.index("File: /app.py")
+
+    def test_nextjs_builder_with_context(self):
+        from owasp_scanner.core.prompts import build_nextjs_file_context
+
+        msg = build_nextjs_file_context(
+            "/route.ts", "route_handler", "export async function GET() {}",
+            project_context="All routes pass through auth middleware.",
+        )
+        assert "Project context" in msg
+        assert "All routes pass through auth middleware." in msg
+
+    def test_empty_string_treated_as_no_context(self):
+        from owasp_scanner.core.prompts import build_python_file_context
+
+        msg = build_python_file_context("/app.py", "x = 1", project_context="   \n  ")
+        assert "Project context" not in msg
+
+    @patch("owasp_scanner.core.llm_scanner._get_client")
+    @patch("owasp_scanner.core.llm_scanner._get_model", return_value="gpt-5.4-nano")
+    def test_scan_file_llm_passes_context(self, mock_model, mock_client):
+        from owasp_scanner.core.llm_scanner import scan_file_llm
+
+        mock_client.return_value.chat.completions.create.return_value = _mock_completion([])
+        scan_file_llm(
+            "x = 1", "/app.py",
+            project_type="python",
+            project_context="Internal helpers trust their callers.",
+        )
+        user_msg = mock_client.return_value.chat.completions.create.call_args.kwargs[
+            "messages"
+        ][1]["content"]
+        assert "Internal helpers trust their callers." in user_msg
+        assert "Project context" in user_msg
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 

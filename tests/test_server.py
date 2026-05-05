@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from owasp_scanner.core.database import Database
 from owasp_scanner.server import (
+    _load_project_context,
     create_baseline,
     create_finding,
     export_report,
@@ -19,6 +20,7 @@ from owasp_scanner.server import (
     health_check,
     list_findings,
     list_scans,
+    llm_triage,
     scan_config,
     scan_directory,
     scan_file,
@@ -410,3 +412,178 @@ class TestDiagnostics:
             result = await health_check()
             assert result["status"] == "healthy"
             assert result["total_rules"] >= 25
+
+
+class TestProjectContextLoading:
+    def test_no_target_no_explicit_returns_none(self):
+        assert _load_project_context(None, None) == (None, None)
+
+    def test_auto_discover_in_target_dir(self, tmp_path: Path):
+        (tmp_path / ".owasp-context.md").write_text("# auth\nAPI gates by tenant.\n")
+        ctx, err = _load_project_context(tmp_path, None)
+        assert err is None
+        assert ctx is not None
+        assert "API gates by tenant." in ctx
+
+    def test_auto_discover_no_file_returns_none(self, tmp_path: Path):
+        ctx, err = _load_project_context(tmp_path, None)
+        assert ctx is None
+        assert err is None
+
+    def test_explicit_relative_resolved_against_target(self, tmp_path: Path):
+        (tmp_path / "ctx.md").write_text("hello")
+        ctx, err = _load_project_context(tmp_path, "ctx.md")
+        assert err is None
+        assert ctx == "hello"
+
+    def test_explicit_absolute_path(self, tmp_path: Path):
+        f = tmp_path / "elsewhere.md"
+        f.write_text("absolute context")
+        ctx, err = _load_project_context(None, str(f))
+        assert err is None
+        assert ctx == "absolute context"
+
+    def test_explicit_missing_returns_error(self, tmp_path: Path):
+        ctx, err = _load_project_context(tmp_path, "missing.md")
+        assert ctx is None
+        assert err is not None
+        assert "does not exist" in err
+
+    def test_empty_file_returns_none(self, tmp_path: Path):
+        (tmp_path / ".owasp-context.md").write_text("   \n  \t\n")
+        ctx, err = _load_project_context(tmp_path, None)
+        assert ctx is None
+        assert err is None
+
+    def test_oversized_file_truncated(self, tmp_path: Path):
+        (tmp_path / ".owasp-context.md").write_text("x" * 50_000)
+        ctx, err = _load_project_context(tmp_path, None)
+        assert err is None
+        assert ctx is not None
+        assert "truncated" in ctx.lower()
+        assert len(ctx.encode("utf-8")) < 25_000
+
+
+class TestScanDirectoryWithContext:
+    """Verify project_context is loaded and threaded into scan_path_hybrid.
+
+    LLM is mocked so these tests don't need OpenAI credentials.
+    """
+
+    @pytest.fixture
+    def llm_available(self):
+        with patch(
+            "owasp_scanner.core.llm_scanner.is_available", return_value=True,
+        ):
+            yield
+
+    async def test_scan_directory_auto_discovers_context(
+        self, mock_db: Database, tmp_path: Path, llm_available,
+    ):
+        (tmp_path / "code.py").write_text("x = 1\n")
+        (tmp_path / ".owasp-context.md").write_text("API gates by tenant_id.")
+
+        from owasp_scanner.core.scanner import ScanResult
+
+        mock_hybrid = AsyncMock(return_value=ScanResult(
+            findings=[], new_count=0, existing_count=0,
+        ))
+        with patch("owasp_scanner.server.scan_path_hybrid", mock_hybrid):
+            result = await scan_directory(str(tmp_path), mode="hybrid")
+
+        assert "error" not in result
+        kwargs = mock_hybrid.call_args.kwargs
+        assert "API gates by tenant_id." in (kwargs.get("project_context") or "")
+        assert ".owasp-context.md" in result.get("project_context_source", "")
+
+    async def test_scan_directory_explicit_context_file_overrides(
+        self, mock_db: Database, tmp_path: Path, llm_available,
+    ):
+        (tmp_path / "code.py").write_text("x = 1\n")
+        (tmp_path / ".owasp-context.md").write_text("auto-discovered")
+        explicit = tmp_path / "custom.md"
+        explicit.write_text("explicit override")
+
+        from owasp_scanner.core.scanner import ScanResult
+
+        mock_hybrid = AsyncMock(return_value=ScanResult(
+            findings=[], new_count=0, existing_count=0,
+        ))
+        with patch("owasp_scanner.server.scan_path_hybrid", mock_hybrid):
+            await scan_directory(
+                str(tmp_path), mode="hybrid", context_file=str(explicit),
+            )
+
+        ctx = mock_hybrid.call_args.kwargs.get("project_context") or ""
+        assert "explicit override" in ctx
+        assert "auto-discovered" not in ctx
+
+    async def test_scan_directory_missing_explicit_context_returns_error(
+        self, mock_db: Database, tmp_path: Path, llm_available,
+    ):
+        (tmp_path / "code.py").write_text("x = 1\n")
+        result = await scan_directory(
+            str(tmp_path), mode="hybrid", context_file="does-not-exist.md",
+        )
+        assert "error" in result
+        assert "does not exist" in result["error"]
+
+    async def test_scan_directory_regex_mode_ignores_context(
+        self, mock_db: Database, tmp_path: Path,
+    ):
+        (tmp_path / "code.py").write_text("x = 1\n")
+        (tmp_path / ".owasp-context.md").write_text("ignored in regex mode")
+
+        result = await scan_directory(str(tmp_path), mode="regex")
+        # Regex mode skips context loading entirely
+        assert "project_context_source" not in result
+
+
+class TestLLMTriageWithContext:
+    @pytest.fixture
+    def llm_available(self):
+        with patch(
+            "owasp_scanner.core.llm_scanner.is_available", return_value=True,
+        ):
+            yield
+
+    async def test_llm_triage_auto_discovers_from_common_ancestor(
+        self, mock_db: Database, tmp_path: Path, llm_available,
+    ):
+        # Set up: two findings in subdirs of tmp_path; .owasp-context.md at root
+        (tmp_path / ".owasp-context.md").write_text("Context at common ancestor.")
+        (tmp_path / "src").mkdir()
+        (tmp_path / "src" / "a.py").write_text("x = 1\n")
+        (tmp_path / "src" / "b.py").write_text("y = 2\n")
+
+        from owasp_scanner.core.llm_scanner import LLMUsage, TriageResult
+
+        f1 = await create_finding(
+            file_path=str(tmp_path / "src" / "a.py"),
+            owasp_category="A05", severity="high", title="t1", description="d",
+        )
+        f2 = await create_finding(
+            file_path=str(tmp_path / "src" / "b.py"),
+            owasp_category="A05", severity="high", title="t2", description="d",
+        )
+
+        captured: dict = {}
+
+        async def fake_triage(findings, **kwargs):
+            captured.update(kwargs)
+            results = [
+                TriageResult(finding_id=f["id"], verdict="true_positive",
+                             confidence=0.7, reasoning="r")
+                for f in findings
+            ]
+            return results, LLMUsage(input_tokens=10, output_tokens=5,
+                                     model="gpt-5.4-nano")
+
+        with patch("owasp_scanner.core.llm_scanner.triage_findings", fake_triage):
+            result = await llm_triage(
+                finding_ids=[f1["finding"]["id"], f2["finding"]["id"]],
+            )
+
+        assert "error" not in result
+        assert captured.get("project_context") == "Context at common ancestor."
+        assert ".owasp-context.md" in result.get("project_context_source", "")
