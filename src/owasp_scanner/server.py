@@ -145,6 +145,7 @@ async def scan_directory(
     mode: str = "regex",
     git_diff_base: str | None = None,
     context_file: str | None = None,
+    compact: bool = False,
 ) -> dict[str, Any]:
     """Scan a directory recursively for OWASP Top 10 security issues.
 
@@ -162,6 +163,10 @@ async def scan_directory(
                       that the LLM should treat as authoritative when reasoning.
                       Auto-discovered as `.owasp-context.md` in the target
                       directory if not provided. Only consulted in LLM modes.
+        compact: When True, omit the inline `findings` list from the response —
+                 only the scan ID, counts, and category/severity breakdowns are
+                 returned. Findings are still in the DB; follow up with
+                 list_findings(scan_id=...) to fetch them.
     """
     try:
         mode_err = _validate_mode(mode)
@@ -277,13 +282,14 @@ async def scan_directory(
                 for cat, count in sorted(by_category.items())
             },
             "by_severity": by_severity,
-            "findings": [f.to_dict() for f in result.findings[:50]],
             "message": (
                 f"Found {len(result.findings)} issues ({result.new_count} new, {result.existing_count} existing)."
                 if result.findings
                 else "No issues found with the current rule set."
             ),
         }
+        if not compact:
+            response["findings"] = [f.to_dict() for f in result.findings[:50]]
 
         if git_diff_base:
             response["git_diff_base"] = git_diff_base
@@ -644,6 +650,17 @@ async def _deep_analyze(target: Path) -> dict[str, Any]:
 # ── Findings Management ────────────────────────────────────────────────────
 
 
+_COMPACT_DROP_FIELDS = ("description", "code_snippet", "suggested_fix", "notes")
+
+
+def _compact_finding(d: dict[str, Any]) -> dict[str, Any]:
+    """Strip verbose fields from a finding dict for compact responses.
+
+    Caller can recover the full record via get_finding(id).
+    """
+    return {k: v for k, v in d.items() if k not in _COMPACT_DROP_FIELDS}
+
+
 @mcp.tool()
 async def list_findings(
     status: str | None = None,
@@ -652,6 +669,7 @@ async def list_findings(
     file_path: str | None = None,
     scan_id: str | None = None,
     limit: int = 50,
+    compact: bool = False,
 ) -> dict[str, Any]:
     """List security findings with optional filters.
 
@@ -662,6 +680,9 @@ async def list_findings(
         file_path: Filter by file path (substring match).
         scan_id: Filter by scan ID.
         limit: Maximum number of results (default 50).
+        compact: When True, omit description, code_snippet, suggested_fix, and
+            notes from each finding so larger result sets fit in a single
+            response. Call get_finding(id) to recover the full record.
     """
     try:
         db = get_db()
@@ -673,9 +694,12 @@ async def list_findings(
             scan_id=scan_id,
             limit=limit,
         )
+        rows = [f.to_dict() for f in findings]
+        if compact:
+            rows = [_compact_finding(r) for r in rows]
         return {
             "count": len(findings),
-            "findings": [f.to_dict() for f in findings],
+            "findings": rows,
         }
     except Exception as exc:
         error_id = errors.log_error("list_findings", exc)

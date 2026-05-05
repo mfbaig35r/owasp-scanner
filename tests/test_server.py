@@ -539,6 +539,64 @@ class TestScanDirectoryWithContext:
         assert "project_context_source" not in result
 
 
+class TestCompactResponses:
+    async def test_list_findings_compact_drops_verbose_fields(
+        self, mock_db: Database,
+    ):
+        await create_finding(
+            file_path="/app.py", owasp_category="A05",
+            severity="high", title="SQLi", description="Long description...",
+            suggested_fix="Use parameterized queries.",
+        )
+        await update_finding(
+            (await list_findings())["findings"][0]["id"],
+            notes="Triage note that takes space",
+        )
+
+        result = await list_findings(compact=True)
+        assert result["count"] == 1
+        f = result["findings"][0]
+        for dropped in ("description", "code_snippet", "suggested_fix", "notes"):
+            assert dropped not in f
+        # Identifiers + classification still present
+        for kept in ("id", "file_path", "severity", "title", "status", "owasp_category"):
+            assert kept in f
+
+    async def test_list_findings_default_keeps_verbose_fields(
+        self, mock_db: Database,
+    ):
+        await create_finding(
+            file_path="/app.py", owasp_category="A05",
+            severity="high", title="SQLi",
+            description="Long description...",
+            suggested_fix="Use parameterized queries.",
+        )
+        result = await list_findings()
+        f = result["findings"][0]
+        assert f["description"] == "Long description..."
+        assert f["suggested_fix"] == "Use parameterized queries."
+
+    async def test_scan_directory_compact_omits_findings_list(
+        self, mock_db: Database, sample_vulnerable_py: Path,
+    ):
+        result = await scan_directory(
+            str(sample_vulnerable_py.parent), compact=True,
+        )
+        assert "scan_id" in result
+        assert result["total_findings"] > 0
+        assert "findings" not in result
+        # Counts and breakdowns still present so caller can decide whether to fetch
+        assert "by_severity" in result
+        assert "by_category" in result
+
+    async def test_scan_directory_default_includes_findings_list(
+        self, mock_db: Database, sample_vulnerable_py: Path,
+    ):
+        result = await scan_directory(str(sample_vulnerable_py.parent))
+        assert "findings" in result
+        assert len(result["findings"]) > 0
+
+
 class TestLLMTriageWithContext:
     @pytest.fixture
     def llm_available(self):
